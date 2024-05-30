@@ -1,0 +1,18 @@
+ocr:
+  max_batch_size: 8
+  max_sequence_length: 31
+  model_path: models/ocr/onnx_print_v4_batch8.onnx
+  charset: "&1#@'()+,-./0123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_`abcdefghijklmnopqrstuvwxyz<>ÀÁÂÃÇÈÉÊÌÍÒÓÔÕÙÚÝàáâãçèéêìíòóôõùúýĂăĐđĨĩŨũƠơƯưẠạẢảẤấẦầẨẩẪẫẬậẮắẰằẲẳẴẵẶặẸẹẺẻẼẽẾếỀềỂểỄễỆệỈỉỊịỌọỎỏỐốỒồỔổỖỗỘộỚớỜờỞởỠỡỢợỤụỦủỨứỪừỬửỮữỰựỲỳỴỵỶỷỸỹ’“”;* $%"
+
+text_detection:
+  model_path: models/text_detection/epoch=43_val_total_loss=0.66.onnx
+
+layout_detection:
+  model_path: models/layout_detection/yolov8m_publaynet.pt
+
+table_structure:
+  model_path: models/table_structure/model.onnx
+  conf_threshold: 0.3
+  
+reconstruct:
+  save_folder: output

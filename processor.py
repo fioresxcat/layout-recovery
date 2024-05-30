@@ -1,0 +1,50 @@
+from typing import Any
+from layout_detection import LayoutDetector
+from text_detection import TextDetector
+from ocr import OCR
+from table_structure import TableStructure
+from reconstruct import Reconstructor
+from pathlib import Path
+import cv2
+
+
+class Processor:
+    def __init__(self, common_cfg, model_cfg):
+        self.common_cfg = common_cfg
+        self.model_cfg = model_cfg
+        self.modules = [
+            LayoutDetector(common_cfg, model_cfg['layout_detection']),
+            TextDetector(common_cfg, model_cfg['text_detection']),
+            OCR(common_cfg, model_cfg['ocr']),
+            TableStructure(common_cfg, model_cfg['table_structure']),
+            Reconstructor(common_cfg, model_cfg['reconstruct'])
+        ]
+
+    def predict(self, img_fp):
+        image = cv2.imread(str(img_fp))
+        result = {
+            'images': [image],
+            'request_id': Path(img_fp).stem
+        }
+        for module in self.modules:
+            print(f'running {module.__class__.__name__}')
+            result = module.predict(result)
+        return result
+        
+
+def main():
+    import cv2
+    import omegaconf
+    import pdb
+
+    common_cfg = omegaconf.OmegaConf.load('configs/common.yaml')
+    model_cfg = omegaconf.OmegaConf.load('configs/model.yaml')
+    processor = Processor(common_cfg, model_cfg)
+
+    img_fp = 'imgs/layout.jpg'
+    result = processor.predict(img_fp)
+    print(f'Result saved to output.docx')
+
+    
+if __name__ == '__main__':
+    main()
