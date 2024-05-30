@@ -4,7 +4,7 @@ import numpy as np
 import cv2
 from PIL import Image
 import pdb
-
+import os
 
 class OCR:
     def __init__(self, common_cfg, model_cfg):
