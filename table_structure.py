@@ -325,6 +325,8 @@ class TableStructure:
                 mean_max[idx] = (mean_max[idx] + bb[7]) / 2
         zip_clusters = list(zip(clusters, mean_min))
         zip_clusters.sort(key=lambda x: x[1])
+        if zip_clusters == []:
+            return []
         zip_clusters = list(np.array(zip_clusters, dtype=object)[:, 0])
     
         return zip_clusters
@@ -393,7 +395,8 @@ class TableStructure:
                     'extracted_value': cells,
                     'html_content': self.excel2html('temp.xlsx'),
                     'image_index': page_index,
-                    'coordinates': table_infos['boxes'][table_index]
+                    'coordinates': table_infos['boxes'][table_index],
+                    'layout_idx': table_infos['index'][table_index]
                 }
                 final_result.append(table_info)
 

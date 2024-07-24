@@ -41,7 +41,10 @@ def row_polys(polys):
             clusters[idx].append(tgt_node)
     zip_clusters = list(zip(clusters, y_min))
     zip_clusters.sort(key=lambda x: x[1])
-    zip_clusters = list(np.array(zip_clusters, dtype=object)[:, 0])
+    if zip_clusters == []:
+        zip_clusters = []
+    else:
+        zip_clusters = list(np.array(zip_clusters, dtype=object)[:, 0])
     return zip_clusters
 
 

@@ -33,13 +33,14 @@ class LayoutDetector:
             result['layout']['class_names'].append(class_names)
 
             # process table
-            tables = {'images': [], 'boxes': []}
-            for box, cl in zip(boxes, class_names):
+            tables = {'images': [], 'boxes': [], 'index': []}
+            for idx, (box, cl) in enumerate(zip(boxes, class_names)):
                 if cl != 'table':
                     continue
                 table_image = image[box[1]:box[3], box[0]:box[2]]
                 tables['images'].append(table_image)
                 tables['boxes'].append(box)
+                tables['index'].append(idx)
             result['tables'].append(tables)
 
         return result  

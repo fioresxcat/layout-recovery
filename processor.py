@@ -20,15 +20,19 @@ class Processor:
             Reconstructor(common_cfg, model_cfg['reconstruct'])
         ]
 
-    def predict(self, img_fp):
-        image = cv2.imread(str(img_fp))
+    def predict(self, img_fps):
+        images = []
+        for img_fp in img_fps:
+            image = cv2.imread(str(img_fp))
+            images.append(image)
         result = {
-            'images': [image],
+            'images': images,
             'request_id': Path(img_fp).stem
         }
         for module in self.modules:
             print(f'running {module.__class__.__name__}')
             result = module.predict(result)
+            print(result.keys())
         return result
         
 
@@ -36,12 +40,21 @@ def main():
     import cv2
     import omegaconf
     import pdb
+    import os
+    import glob
+    import tqdm
+    import random
+    import sys
 
     common_cfg = omegaconf.OmegaConf.load('configs/common.yaml')
     model_cfg = omegaconf.OmegaConf.load('configs/model.yaml')
     processor = Processor(common_cfg, model_cfg)
 
-    img_fp = 'imgs/layout.jpg'
+    l = sorted(glob.glob(sys.argv[1] + '*.jpg'))
+    group = []
+    current = None
+    
+    img_fp = l
     result = processor.predict(img_fp)
     print(f'Result saved to output.docx')
 

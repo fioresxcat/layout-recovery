@@ -8,7 +8,7 @@ text_detection:
   model_path: models/text_detection/epoch=43_val_total_loss=0.66.onnx
 
 layout_detection:
-  model_path: models/layout_detection/yolov8m_publaynet.pt
+  model_path: models/layout_detection/best.pt
 
 table_structure:
   model_path: models/table_structure/model.onnx
