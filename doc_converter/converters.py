@@ -71,7 +71,6 @@ class Converters:
             maxx = min(maxx, base_margins[1])
             miny = min(miny, base_margins[2])
             maxy = min(maxy, base_margins[3])
-        print(len(list_doc))
         merged_document = Document()
         merged_document.styles['Normal'].font.name = 'Times New Roman'
         sections = merged_document.sections

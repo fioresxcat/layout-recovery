@@ -15,6 +15,8 @@ import numpy as np
 from PIL import Image
 import math
 
+from unidecode import unidecode
+
 from .utils import group, boxes_overlap, cut_off_box, vertical_align, horizontal_align, any_upper
 
 class Converter:
@@ -141,7 +143,7 @@ class Converter:
                     flag = False
                     for line_number, line in enumerate(content):
                         p += [i[1] for i in line['words']]
-                        if ' '.join(p) == "CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM":
+                        if unidecode(' '.join(p)).lower() == "cong hoa xa hoi chu nghia viet nam":
                             p += '\n'
                         if ' '.join(p) == "Nơi nhận:" and line_number == 0:
                             flag = True

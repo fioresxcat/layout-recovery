@@ -50,7 +50,7 @@ def main():
     model_cfg = omegaconf.OmegaConf.load('configs/model.yaml')
     processor = Processor(common_cfg, model_cfg)
 
-    l = sorted(glob.glob(sys.argv[1] + '*.jpg'))
+    l = sorted(glob.glob(sys.argv[1] + '*'))
     group = []
     current = None
     
