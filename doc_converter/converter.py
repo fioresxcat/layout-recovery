@@ -145,6 +145,8 @@ class Converter:
                         p += [i[1] for i in line['words']]
                         if unidecode(' '.join(p)).lower() == "cong hoa xa hoi chu nghia viet nam":
                             p += '\n'
+                        if unidecode(' '.join(p)).lower() == "uy ban nhan dan":
+                            p += '\n'
                         if ' '.join(p) == "Nơi nhận:" and line_number == 0:
                             flag = True
                         if flag:

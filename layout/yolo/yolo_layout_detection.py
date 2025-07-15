@@ -1,17 +1,15 @@
 from typing import Any
 from ultralytics import YOLO
 import numpy as np
+from modules.yolo.yolo_detector import BaseYOLODetector
 
-class LayoutDetector:
+class YOLOLayoutDetector:
     def __init__(self, common_cfg, model_cfg):
-        self.common_cfg = common_cfg
-        self.model_cfg = model_cfg
-        self.model = YOLO(self.model_cfg.model_path)
-        self.imgsz = 640
-        self.labels = self.model.names
+        self.model = BaseYOLODetector(common_cfg, model_cfg)
+        self.model.labels = ['text', 'title', 'table', 'list', 'figure']
     
 
-    def predict(self, result) -> Any:
+    def predict(self, images) -> Any:
         images = result['images']
         result['layout'] = {'boxes': [], 'scores': [], 'class_names': []}
         result['tables'] = []

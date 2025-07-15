@@ -1,9 +1,9 @@
 from typing import Any
-from layout_detection import LayoutDetector
+from layout.yolo.yolo_layout_detection import YOLOLayoutDetector
 from text_detection import TextDetector
 from ocr import OCR
 from table_structure import TableStructure
-from reconstruct import Reconstructor
+from recovery.reconstruct import Reconstructor
 from pathlib import Path
 import cv2
 
@@ -13,7 +13,7 @@ class Processor:
         self.common_cfg = common_cfg
         self.model_cfg = model_cfg
         self.modules = [
-            LayoutDetector(common_cfg, model_cfg['layout_detection']),
+            YOLOLayoutDetector(common_cfg, model_cfg['layout_detection']),
             TextDetector(common_cfg, model_cfg['text_detection']),
             OCR(common_cfg, model_cfg['ocr']),
             TableStructure(common_cfg, model_cfg['table_structure']),
@@ -50,13 +50,9 @@ def main():
     model_cfg = omegaconf.OmegaConf.load('configs/model.yaml')
     processor = Processor(common_cfg, model_cfg)
 
-    l = sorted(glob.glob(sys.argv[1] + '*'))
-    group = []
-    current = None
-    
-    img_fp = l
-    result = processor.predict(img_fp)
-    print(f'Result saved to output.docx')
+    doc_im_dir = sys.argv[1]
+    img_fps = [str(fp) for fp in list(Path(doc_im_dir).glob('*'))]
+    result = processor.predict(img_fps)
 
     
 if __name__ == '__main__':
