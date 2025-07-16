@@ -1,0 +1,10 @@
+triton_server: # config of triton server
+    ip: ${AIHN_TRITON_HOST}    # ip of triton server
+    port: ${AIHN_TRITON_PORT}  # port of triton server, common config of grpc port is 8001
+    MAX_RETRY: ${AIHN_TRITON_MAX_RETRY}
+    SSL_ENABLE: ${AIHN_TRITON_SSL_ENABLE}
+
+vllm_server: # config of vllm server
+    ip: ${AIHN_VLLM_HOST}    # ip of vllm server
+    port: ${AIHN_VLLM_PORT}  # port of vllm server
+    api_key: ${AIHN_VLLM_API_KEY}  # port of vllm server

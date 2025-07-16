@@ -3,7 +3,6 @@ from docx import shared
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.section import WD_SECTION
 from docx.oxml.ns import qn
-from ultralytics import YOLO
 import pdb
 
 def main():
@@ -31,9 +30,14 @@ def main():
     doc.save('test.docx')
 
 def nothing():
-    model = YOLO('models/layout_detection/best.pt')
-    print(model.names)
-    pdb.set_trace()
+    from paddleocr import LayoutDetection
+
+    model = LayoutDetection(model_name="PP-DocLayout_plus-L")
+    output = model.predict("test_files/751_QD-UBND_m_608973_11.jpg", batch_size=1, layout_nms=True)
+    for res in output:
+        res.print()
+        res.save_to_img(save_path="./output/")
+        res.save_to_json(save_path="./output/res.json")
 
 
 if __name__ == '__main__':

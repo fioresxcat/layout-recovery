@@ -4,5 +4,6 @@ temp*
 imgs/
 docx_output/
 __pycache__/
-output/
+output*
 docx_output
+content.pkl

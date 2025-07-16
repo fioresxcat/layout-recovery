@@ -1,18 +1,44 @@
-ocr:
-  max_batch_size: 8
-  max_sequence_length: 31
-  model_path: models/ocr/onnx_print_v4_batch8.onnx
-  charset: "&1#@'()+,-./0123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_`abcdefghijklmnopqrstuvwxyz<>ÀÁÂÃÇÈÉÊÌÍÒÓÔÕÙÚÝàáâãçèéêìíòóôõùúýĂăĐđĨĩŨũƠơƯưẠạẢảẤấẦầẨẩẪẫẬậẮắẰằẲẳẴẵẶặẸẹẺẻẼẽẾếỀềỂểỄễỆệỈỉỊịỌọỎỏỐốỒồỔổỖỗỘộỚớỜờỞởỠỡỢợỤụỦủỨứỪừỬửỮữỰựỲỳỴỵỶỷỸỹ’“”;* $%"
-
-text_detection:
-  model_path: models/text_detection/epoch=43_val_total_loss=0.66.onnx
-
-layout_detection:
-  model_path: models/layout_detection/best.pt
-
-table_structure:
-  model_path: models/table_structure/model.onnx
-  conf_threshold: 0.3
+triton_models:
   
-reconstruct:
-  save_folder: output
+  capex_text_detection:
+    model_spec_name: capex_text_detection
+    box_thresh: 0.3
+    model_spec_version: 12024071715005
+    input_name: input
+    input_type: UINT8
+    output_name: output
+    request_timeout: 60.0
+
+  tvpl_layout_detection:
+    model_spec_name: yolo_layout_detection_tvpl
+    model_spec_version: 22024112101001
+    input_shape: [640, 640, 3]
+    input_name: images
+    input_type: FP32
+    max_batch_size: 1
+    output_name: output0
+    iou_threshold: 0.3
+    conf_threshold: 0.3
+    request_timeout: 60.0
+  
+  printing_ocr:
+    model_spec_name: printing_ocr
+    model_spec_version: 12023071214014
+    input_name: input
+    input_shape: [40, 416, 3]
+    input_type: FP32
+    max_sequence_length: 31
+    charset: "&1#@'()+,-./0123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_`abcdefghijklmnopqrstuvwxyz<>ÀÁÂÃÇÈÉÊÌÍÒÓÔÕÙÚÝàáâãçèéêìíòóôõùúýĂăĐđĨĩŨũƠơƯưẠạẢảẤấẦầẨẩẪẫẬậẮắẰằẲẳẴẵẶặẸẹẺẻẼẽẾếỀềỂểỄễỆệỈỉỊịỌọỎỏỐốỒồỔổỖỗỘộỚớỜờỞởỠỡỢợỤụỦủỨứỪừỬửỮữỰựỲỳỴỵỶỷỸỹ’“”;* $%"
+    max_batch_size: 32
+    output_name: output
+    request_timeout: 60.0
+
+  general_table_structure:
+    model_spec_name: ACB_general_table_structure
+    conf_threshold: 0.5
+    model_spec_version: 32025030614060
+    input_name: images
+    input_type: FP32 
+    output_name: output0
+    request_timeout: 60.0
+    max_batch_size: 1

@@ -10,7 +10,7 @@ import logging
 import numpy as np
 import tritonclient.grpc as grpcclient
 
-from utils import total_time
+from utils.utils import total_time
 
 class BaseModule(object):
     def __init__(self, common_config, model_config):
