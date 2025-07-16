@@ -1,6 +1,7 @@
 import numpy as np
 from .yolo.yolo_layout_detection import YOLOLayoutDetector
 from .surya.predictor import SuryaLayoutPredictor
+from .paddle.predictor import PaddleLayoutPredictor
 
 class LayoutPredictor:
     def __init__(self, common_cfg, model_cfg, model_type: str):
@@ -12,6 +13,8 @@ class LayoutPredictor:
             self.model = YOLOLayoutDetector(common_cfg, model_cfg)
         elif self.model_type == 'surya':
             self.model = SuryaLayoutPredictor(common_cfg, model_cfg)
+        elif self.model_type == 'paddle':
+            self.model = PaddleLayoutPredictor(common_cfg, model_cfg)
         else:
             raise ValueError(f'Invalid layout model type: {model_type}')
 

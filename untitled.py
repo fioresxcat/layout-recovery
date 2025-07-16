@@ -32,12 +32,13 @@ def main():
 def nothing():
     from paddleocr import LayoutDetection
 
-    model = LayoutDetection(model_name="PP-DocLayout_plus-L")
+    model = LayoutDetection(model_name="PP-DocLayout-L")
     output = model.predict("test_files/751_QD-UBND_m_608973_11.jpg", batch_size=1, layout_nms=True)
     for res in output:
         res.print()
         res.save_to_img(save_path="./output/")
         res.save_to_json(save_path="./output/res.json")
+    pdb.set_trace()
 
 
 if __name__ == '__main__':

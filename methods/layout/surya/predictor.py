@@ -6,6 +6,7 @@ import cv2
 from typing import List
 
 from utils.utils import poly2box
+from ..label_list import FINAL_LABELS
 
 
 class SuryaLayoutPredictor:
@@ -13,31 +14,33 @@ class SuryaLayoutPredictor:
         self.model = LayoutPredictor()
         self.batch_size = 4
         self.label_map = {
-            'Blank': 'text',
+            'Blank': 'blank',
             'Text': 'text',
-            'TextInlineMath': 'text',
+            'TextInlineMath': 'equation',
             'Code': 'text',
             'SectionHeader': 'title',
-            'Caption': 'text',
-            'Footnote': 'text',
-            'Equation': 'text',
+            'Caption': 'caption',
+            'Footnote': 'footnote',
+            'Equation': 'equation',
             'ListItem': 'list',
-            'PageFooter': 'text',
-            'PageHeader': 'text',
+            'PageFooter': 'footer',
+            'PageHeader': 'header',
             'Picture': 'figure',
             'Figure': 'figure',
             'Table': 'table',
             'Form': 'text',
-            'TableOfContents': 'text',
-            'Handwriting': 'text'
+            'TableOfContents': 'table_of_contents',
+            'Handwriting': 'handwriting'
         }
+        assert all(label in FINAL_LABELS for label in self.label_map.values())
+        
 
     def predict(self, images):
         images = [cv2.cvtColor(image, cv2.COLOR_BGR2RGB) for image in images]
         images = [Image.fromarray(image) for image in images]
-        preds = self.model(images, batch_size=self.batch_size)
+        preds: List[LayoutResult] = self.model(images, batch_size=self.batch_size)
 
-        results: List[LayoutResult] = [([], [], []) for _ in range(len(images))] # list of boxes, scores, class_names
+        results = [([], [], []) for _ in range(len(images))] # list of boxes, scores, class_names
         for image_index, pred in enumerate(preds):
             pred.bboxes.sort(key=lambda x: x.position)
             for box_info in pred.bboxes:
