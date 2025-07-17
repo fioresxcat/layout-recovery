@@ -1,7 +1,7 @@
 import cv2
 from copy import deepcopy
 from pathlib import Path
-from utils import *
+import pickle
 import os
 import numpy as np
 from docx import Document
@@ -62,9 +62,9 @@ class ReconstructPredictor:
             layout_texts = [[] for _ in layout_boxes]
             words = result['ocr']['raw_words'][idx]
             for i, poly in enumerate(result['text_detection']['coords'][idx]):
-                for box_idx, box in enumerate(layout_boxes):
+                for block_idx, box in enumerate(layout_boxes):
                     if is_poly_in_box(poly, box):
-                        layout_texts[box_idx].append(poly)
+                        layout_texts[block_idx].append(poly)
                         break
             poly2word = dict(zip(result['text_detection']['coords'][idx], words))
             for i, polys in enumerate(layout_texts):
@@ -94,6 +94,9 @@ class ReconstructPredictor:
 
 
     def predict(self, result):
+        with open('result.pkl', 'wb') as f:
+            pickle.dump(result, f)
+
         imgs = deepcopy(result['images'])
 
         self.log_layout_result(result['request_id'], imgs, result['layout']['boxes'], 
@@ -105,3 +108,20 @@ class ReconstructPredictor:
         doc = converter.reconstruct()
         result['final_doc'] = doc
         return result
+    
+
+if __name__ == '__main__':
+    from utils.utils import load_yaml, convert_docx_to_pdf
+    import pickle
+
+    common_cfg = load_yaml('configs/common.yaml')
+    model_cfg = load_yaml('configs/model.yaml')
+    predictor = ReconstructPredictor(common_cfg, model_cfg)
+    
+    with open('result.pkl', 'rb') as f:
+        result = pickle.load(f)
+    result = predictor.predict(result)
+    doc = result['final_doc']
+    doc.save('output.docx')
+    convert_docx_to_pdf('output.docx', 'output.pdf')
+    print('done!')

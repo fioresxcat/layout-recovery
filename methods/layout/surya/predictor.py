@@ -13,24 +13,43 @@ class SuryaLayoutPredictor:
     def __init__(self, common_cfg, model_cfg):
         self.model = LayoutPredictor()
         self.batch_size = 4
+        # self.label_map = {
+        #     'Blank': 'blank',
+        #     'Text': 'text',
+        #     'TextInlineMath': 'equation',
+        #     'Code': 'text',
+        #     'SectionHeader': 'title',
+        #     'Caption': 'caption',
+        #     'Footnote': 'footnote',
+        #     'Equation': 'equation',
+        #     'ListItem': 'list',
+        #     'PageFooter': 'footer',
+        #     'PageHeader': 'header',
+        #     'Picture': 'figure',
+        #     'Figure': 'figure',
+        #     'Table': 'table',
+        #     'Form': 'text',
+        #     'TableOfContents': 'table_of_contents',
+        #     'Handwriting': 'handwriting'
+        # }
         self.label_map = {
-            'Blank': 'blank',
+            'Blank': 'text',
             'Text': 'text',
-            'TextInlineMath': 'equation',
+            'TextInlineMath': 'text',
             'Code': 'text',
             'SectionHeader': 'title',
-            'Caption': 'caption',
-            'Footnote': 'footnote',
-            'Equation': 'equation',
+            'Caption': 'text',
+            'Footnote': 'text',
+            'Equation': 'text',
             'ListItem': 'list',
-            'PageFooter': 'footer',
-            'PageHeader': 'header',
+            'PageFooter': 'text',
+            'PageHeader': 'text',
             'Picture': 'figure',
             'Figure': 'figure',
             'Table': 'table',
             'Form': 'text',
-            'TableOfContents': 'table_of_contents',
-            'Handwriting': 'handwriting'
+            'TableOfContents': 'text',
+            'Handwriting': 'text'
         }
         assert all(label in FINAL_LABELS for label in self.label_map.values())
         

@@ -247,3 +247,7 @@ def sort_box_by_score(boxes, scores, classes):
     scores = [scores[i] for i in indices]
     classes = [classes[i] for i in indices]
     return boxes, scores, classes
+
+
+def convert_docx_to_pdf(docx_path, pdf_path):
+    os.system(f'libreoffice --headless --convert-to pdf "{docx_path}" --outdir "{os.path.dirname(pdf_path)}"')

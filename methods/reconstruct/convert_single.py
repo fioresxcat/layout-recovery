@@ -17,6 +17,7 @@ from unidecode import unidecode
 
 from methods.layout.label_list import FINAL_LABELS
 from .utils import group, boxes_overlap, cut_off_box, vertical_align, horizontal_align, any_upper
+from .block_processors import *
 
 class ConverterSingle:
 
@@ -47,8 +48,99 @@ class ConverterSingle:
 
 
     def reconstruct(self):
-        self._add_raw_layout()
-        self._process_layout()
+        # Add raw layout as list of layout blocks
+        self._raw_layout = self._add_raw_layout()
+
+        # Build layout content by merging layout blocks and OCR results
+        self._layout_content = self._build_layout_content()
+
+        # Calculate margin
+        x_minimal = 0
+        y_minimal = 0
+        x_maximal = self._size[0]
+        y_maximal = self._size[0]
+        for _, coordinates, _ in self._raw_layout:
+            xmin, ymin, xmax, ymax = [int(i) for i in coordinates]
+            if xmin > x_minimal:
+                x_minimal = xmin
+            if ymin > y_minimal:
+                y_minimal = ymin
+            if xmax < x_maximal:
+                x_maximal = xmax
+            if ymax < y_maximal:
+                y_maximal = ymax
+        
+        # Group layout block into rows and columns
+        self._layout = self._build_row_and_col()
+
+        # build final layout from layout
+        for row in self._layout:
+            num_columns = len(row)
+            if num_columns != self._row_column_structure[-1]:
+                self._row_column_structure.append(num_columns)
+                self._final_layout.append([[] for i in range(num_columns)])
+            for i in range(num_columns):
+                self._final_layout[-1][i] += row[i]
+        self._row_column_structure = self._row_column_structure[1:]
+        self._size_over_height_ratio = self._calculate_size_ratio()
+        
+
+        # init processor for each type of block
+        self._init_block_processors()
+
+        # Start writing to documents block by block
+        for idx, row in enumerate(self._final_layout):
+            self._process_row(row, idx)
+
+
+    def _process_row(self, row, idx):
+        """Process a row of layout blocks and add them to the document.
+        Args:
+            row (List[List[int]]): A list of columns, where each column contains indices 
+                                  of layout blocks to process
+            idx (int): Index of the current row in self._final_layout
+        Raises:
+            ValueError: If row is empty or if an unsupported alignment is specified
+        """
+        # Validate row is not empty
+        if len(row) == 0:
+            raise ValueError('Document row cannot be emptied, check the final_layout')
+
+        column_break, paragraph = False, None
+        section = self._create_section(num_columns=len(row), idx=idx) # Create section with appropriate number of columns
+        # Process each column in the row
+        for col_idx, col in enumerate(row):
+            # Process each block in the column
+            for block_order, block in enumerate(col):
+                layout_content = self._layout_content[block]
+                block_type, coordinates, _ = self._raw_layout[block]
+                block_w = coordinates[3] - coordinates[1]  # Block width
+                
+                # Calculate distance to next block (for spacing)
+                if block_order < len(col) - 1:
+                    block_distance = self._raw_layout[col[block_order + 1]][1][0] - coordinates[2]
+                else:
+                    block_distance = 0
+
+                if block_type in ['text', 'title', 'list']:
+                    self._doc, column_break, paragraph = self._text_processor.process(self._doc, layout_content, block_distance, block_type, column_break, paragraph)
+                elif block_type == 'figure':
+                    self._doc = self._figure_processor.process(self._doc, layout_content, block_w)
+                else: 
+                    self._doc = self._table_processor.process(self._doc, layout_content)
+            
+            # Add column break if needed
+            if len(row) > 1 and col_idx < len(row) - 1:
+                paragraph = self._doc.add_paragraph()
+                self._add_column_break(paragraph)
+                column_break = True
+
+
+    def _init_block_processors(self):
+        self._text_processor = TextBlockProcessor(self._size, self._size_over_height_ratio, self._inches_per_pixel)
+        self._figure_processor = FigureBlockProcessor()
+        self._table_processor = TableBlockProcessor()
+
 
     def _add_raw_layout(self):
         """Add raw layout information to self._raw_layout and set document margins.
@@ -72,20 +164,15 @@ class ConverterSingle:
         ]
         """
         # Initialize page boundaries to find margins
-        page_xmin = 10000
-        page_xmax = 0 
-        page_ymin = 10000
-        page_ymax = 0
+        page_xmin, page_xmax, page_ymin, page_ymax = 10000, 0, 10000, 0
 
         # Iterate through layout blocks and build self._raw_layout
         for name, coordinates, score in zip(self._class_names, self._boxes, self._scores):
             ymin, xmin, ymax, xmax = coordinates
             
             # Track overall page boundaries
-            page_xmin = min(page_xmin, xmin)
-            page_xmax = max(page_xmax, xmax)
-            page_ymin = min(page_ymin, ymin)
-            page_ymax = max(page_ymax, ymax)
+            page_xmin, page_xmax = min(page_xmin, xmin), max(page_xmax, xmax)
+            page_ymin, page_ymax = min(page_ymin, ymin), max(page_ymax, ymax)
 
             # Add layout block info
             l = [name, [xmin, ymin, xmax, ymax], score]
@@ -109,7 +196,7 @@ class ConverterSingle:
 
         # Process layout further
         self._raw_layout = self._handle_overlapping_layout_boxes()
-        self._layout_content = self._build_layout_content()
+        return self._raw_layout
         
 
     def _handle_overlapping_layout_boxes(self):
@@ -242,8 +329,10 @@ class ConverterSingle:
                     d['coords'] = (line_xmin, line_ymin, line_xmax, line_ymax)
                     new_result.append(d)
                 self._layout_content.append(new_result)
+
             elif block_type == 'figure':
                 self._layout_content.append(block_image)
+
             elif block_type == 'table':
                 for table_info in self._table_structures:
                     if idx == table_info['layout_idx'] and self._page_idx == table_info['image_index']:
@@ -262,159 +351,6 @@ class ConverterSingle:
             del self._layout_content[idx]
 
         return self._layout_content
-    
-
-    def _process_layout(self):
-        # Calculate margin
-        x_minimal = 0
-        y_minimal = 0
-        x_maximal = self._size[0]
-        y_maximal = self._size[0]
-        for _, coordinates, _ in self._raw_layout:
-            xmin, ymin, xmax, ymax = [int(i) for i in coordinates]
-            if xmin > x_minimal:
-                x_minimal = xmin
-            if ymin > y_minimal:
-                y_minimal = ymin
-            if xmax < x_maximal:
-                x_maximal = xmax
-            if ymax < y_maximal:
-                y_maximal = ymax
-        
-        # Group layout block into rows and columns
-        self._layout = self._build_row_and_col()
-
-        # build final layout from layout
-        for row in self._layout:
-            num_columns = len(row)
-            if num_columns != self._row_column_structure[-1]:
-                self._row_column_structure.append(num_columns)
-                self._final_layout.append([[] for i in range(num_columns)])
-            for i in range(num_columns):
-                self._final_layout[-1][i] += row[i]
-        self._row_column_structure = self._row_column_structure[1:]
-        self._size_over_height_ratio = self._calculate_size_ratio()
-        
-        # Start writing to documents block by block
-        for idx, row in enumerate(self._final_layout):
-            self._process_row(row, idx)
-    
-    
-    def _process_row(self, row, idx):
-        """Process a row of layout blocks and add them to the document.
-        Args:
-            row (List[List[int]]): A list of columns, where each column contains indices 
-                                  of layout blocks to process
-            idx (int): Index of the current row in self._final_layout
-        Raises:
-            ValueError: If row is empty or if an unsupported alignment is specified
-        """
-        # Validate row is not empty
-        if len(row) == 0:
-            raise ValueError('Document row cannot be emptied, check the final_layout')
-
-        column_break = False
-        # Create section with appropriate number of columns
-        section = self._create_section(num_columns=len(row), idx=idx)
-
-        # Process each column in the row
-        for col_idx, col in enumerate(row):
-            # Process each block in the column
-            for block_order, block in enumerate(col):
-                content = self._layout_content[block]
-                block_type, coordinates, _ = self._raw_layout[block]
-                block_w = coordinates[3] - coordinates[1]  # Block width
-                
-                # Calculate distance to next block (for spacing)
-                if block_order < len(col) - 1:
-                    block_distance = self._raw_layout[col[block_order + 1]][1][0] - coordinates[2]
-                else:
-                    block_distance = 0
-
-                # Handle text-based blocks
-                if block_type in ['text', 'title', 'list']:
-                    # Determine alignment and indentation
-                    alignment, tab_first = self._align_determined(content)
-                    
-                    # Calculate font size based on text height
-                    temp_d = {True: 1, False: 1.1}  # Adjustment factor for uppercase/lowercase
-                    height = [(content[i]['words'][j][0][2] - content[i]['words'][j][0][0]) / (temp_d[any_upper(content[i]['words'][j][1])]) for i in range(len(content)) for j in range(len(content[i]['words']))]
-                    mean_height = sum(height) / len(height)
-                    font_size = round(mean_height * self._size_over_height_ratio)
-                    
-                    # Calculate line spacing
-                    line_distance = [content[i + 1]['coords'][0] - content[i]['coords'][2] for i in range(len(content) - 1)]
-                    line_distance = sum(line_distance) / len(line_distance) if len(line_distance) > 0 else 0
-                    
-                    # Apply minimum line spacing while preserving calculated spacing when larger
-                    MIN_LINE_SPACING_PT = font_size * 1.2
-                    calculated_spacing = 72 * line_distance * self._inches_per_pixel
-                    effective_spacing = max(calculated_spacing, MIN_LINE_SPACING_PT)
-                    
-                    # Process each line in the block
-                    for line_number, line in enumerate(content):
-                        # Join words and handle special cases
-                        line_words = [i[1] for i in line['words']]
-                        line_text = ' '.join(line_words)
-                        
-                        # Special handling for Vietnamese document headers
-                        if unidecode(line_text.lower()) == "cong hoa xa hoi chu nghia viet nam":
-                            line_text += '\n'
-                        if unidecode(line_text.lower()) == "uy ban nhan dan":
-                            line_text += '\n'
-                        if line_text == "Nơi nhận:" and line_number == 0:
-                            line_text += '\n'
-
-                        # Add paragraph and apply formatting
-                        if column_break == False: # add new paragraph if column_break is False
-                            paragraph = self._doc.add_paragraph()
-                        else:  # if column_break is True, add to the last paragraph and set column_break to False
-                            column_break = False
-                            
-                        # Configure paragraph formatting
-                        paragraph_format = paragraph.paragraph_format
-                        paragraph_format.line_spacing = shared.Pt(effective_spacing)
-                        paragraph_format.space_after = shared.Pt(72 * block_distance * self._inches_per_pixel)
-                        paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
-                        
-                        # Add text and apply font settings
-                        run = paragraph.add_run(line_text)
-                        run.font.size = shared.Pt(font_size)
-                        if block_type == 'title':
-                            run.bold = True
-                            
-                        # Apply alignment
-                        if alignment == 'Left':
-                            paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
-                        elif alignment == 'Right':
-                            paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                        elif alignment == 'Center':
-                            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        elif alignment == 'Justify':
-                            paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-                        else:
-                            raise ValueError(f'{alignment} alignment is not supported')
-                            
-                        # Apply indentation if needed
-                        if tab_first:
-                            paragraph_format.first_line_indent = shared.Inches(0.5)
-                        else:
-                            paragraph_format.first_line_indent = None
-
-                # Handle figure blocks
-                elif block_type == 'figure':
-                    self._save_image_from_array(content, 'temp.png')
-                    self._doc.add_picture('temp.png', shared.Inches(block_w * self._inches_per_pixel))
-                
-                # Handle table blocks
-                else: 
-                    self._create_table(content)
-            
-            # Add column break if needed
-            if len(row) > 1 and col_idx < len(row) - 1:
-                paragraph = self._doc.add_paragraph()
-                self._add_column_break(paragraph)
-                column_break = True
 
 
     def _create_section(self, num_columns: int=None, idx=None):
@@ -474,13 +410,6 @@ class ConverterSingle:
         return self._layout
         
     
-    def _save_image_from_array(self, array, image_path):
-        # Ensure the array is in the correct format (uint8)
-        if array.dtype != np.uint8:
-            array = (255 * array).astype(np.uint8)
-        img = Image.fromarray(array)
-        img.save(image_path)
-
     def _add_column_break(self, paragraph):
         """Add a column break to the given paragraph."""
         run = paragraph.add_run()
@@ -489,35 +418,6 @@ class ConverterSingle:
         run._r.append(br)
         return
     
-    def _align_determined(self, content):
-        if len(content) == 1:
-            mid_point = (content[0]['coords'][1] + content[0]['coords'][3]) / 2
-            half_page = self._size[1] / 2
-            if abs(mid_point - half_page) < 0.1 * self._size[1]:
-                return "Center", False
-            elif half_page - mid_point > 0.1 * self._size[1]:
-                return 'Left', False
-            else:
-                return 'Right', False
-
-        first_line_start = content[0]['coords'][1]
-        starts = [i['coords'][1] for i in content]
-        ends = [i['coords'][3] for i in content][:-1]
-        mid_points = [(start + end) / 2 for (start, end) in zip(starts, ends)]
-
-        if all(abs(start - starts[0]) < 5 for start in starts) and all(abs(end - ends[0]) < 5 for end in ends):
-            return "Justify", False
-        
-        if all(abs(start - starts[1]) < 5 for start in starts[1:]):  # Excluding the first line
-            if first_line_start - starts[1]> 5:
-                return 'Left', True
-        if all(abs(start - starts[0]) < 5 for start in starts):
-            return 'Left', False
-        if all(abs(mid - mid_points[0]) < 5 for mid in mid_points):
-            return "Center", False
-        if all(abs(end - ends[0]) < 5 for end in ends):
-            return 'Right', False
-        return "Justify", False
 
     def _calculate_size_ratio(self):
         """
@@ -544,31 +444,6 @@ class ConverterSingle:
             self._size_over_height_ratio = 0.4
         return self._size_over_height_ratio
 
-    def _create_table(self, content):
-        cell_data = [i['relation'] for i in content['extracted_value']]
-        cell_box = [i['box'] for i in content['extracted_value']]
-        cell_text = [i['text'] for i in content['extracted_value']]
-        num_rows = max(end_row for _, end_row, _, _ in cell_data) + 1
-        num_columns = max(end_col for _, _, _, end_col in cell_data) + 1
-        table = self._doc.add_table(num_rows, num_columns)
-        for r in table.rows:
-            for c in r.cells:
-                ps = c.paragraphs
-                for p in ps:
-                    for run in p.runs:
-                        font = run.font
-                        font.size= shared.Pt(11)
-        table.style = 'Table Grid'
-
-        for i, (start_row, end_row, start_col, end_col) in enumerate(cell_data):
-            cell_width = (cell_box[i][2] - cell_box[i][0]) * self._inches_per_pixel
-            if start_row != end_row or start_col != end_col:
-                merged_cell = table.cell(start_row, start_col).merge(table.cell(end_row, end_col))
-                merged_cell.text = cell_text[i]
-                merged_cell.width = shared.Inches(cell_width)
-            else:
-                table.cell(start_row, start_col).text = cell_text[i]
-                table.cell(start_row, start_col).width = shared.Inches(cell_width)
 
     def get_doc(self):
         return self._doc
