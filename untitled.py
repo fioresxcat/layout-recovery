@@ -4,6 +4,10 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.section import WD_SECTION
 from docx.oxml.ns import qn
 import pdb
+import cv2
+import fitz
+import numpy as np
+import os
 
 def main():
     doc = Document()
@@ -29,18 +33,45 @@ def main():
     # save
     doc.save('test.docx')
 
-def nothing():
-    from paddleocr import LayoutDetection
 
-    model = LayoutDetection(model_name="PP-DocLayout-L")
-    output = model.predict("test_files/751_QD-UBND_m_608973_11.jpg", batch_size=1, layout_nms=True)
-    for res in output:
-        res.print()
-        res.save_to_img(save_path="./output/")
-        res.save_to_json(save_path="./output/res.json")
-    pdb.set_trace()
+def visualize_pdf_blocks():
+    doc = fitz.open('output.pdf')
+    for page_index, page in enumerate(doc):
+        # page: Page = page
+        # page.get_textbox((0, 0, page.rect.width, page.rect.height))
+        # page.get_textpage()
+        # page.get_displaylist()
+
+        mat = fitz.Matrix(2, 2)
+        pix = page.get_pixmap(matrix=mat)
+        shape = (pix.height, pix.width, 3)
+        image = np.ndarray(shape, dtype=np.uint8, buffer=pix.samples)  # this is rgb image
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)  # after this it is actually bgr image
+
+        page_blocks = page.get_text("dict", flags=11)["blocks"]
+        # pdb.set_trace()
+        for b_idx, block in enumerate(page_blocks):
+            bb = list(map(int, block['bbox']))
+            bb = list(map(lambda x: x*2, bb))
+            cv2.rectangle(image, (bb[0], bb[1]), (bb[2], bb[3]), (0, 0, 255), 2)
+        cv2.imwrite(f'page_{page_index}.jpg', image)
+        print(f'done page {page_index}')
+
+
+def nothing():
+    from pdf2docx import Converter
+
+    pdf_file = 'output.pdf'
+    docx_file = 'output-pdf2docx.docx'
+
+    # convert pdf to docx
+    cv = Converter(pdf_file)
+    cv.convert(docx_file)      # all pages by default
+    cv.close()
+
+
 
 
 if __name__ == '__main__':
     # main()
-    nothing()
+    visualize_pdf_blocks()

@@ -1,60 +1,44 @@
 from copy import deepcopy
 import pdb
-import os
 import cv2
 import numpy as np
 from PIL import Image
 import math
 from typing_extensions import List, Dict, Tuple, Optional, Any, Literal
 
-from docx import Document
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-from docx.enum.section import WD_SECTION
-from docx.enum.text import WD_LINE_SPACING, WD_ALIGN_PARAGRAPH
-from docx import shared
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-
+import pymupdf
 from unidecode import unidecode
 
 from methods.layout.label_list import FINAL_LABELS
 from .utils import group, boxes_overlap, cut_off_box, vertical_align, horizontal_align, any_upper
 from .block_processors import *
 
-class ConverterSingle:
-    def __init__(self, request_id, page_idx, image, class_names, boxes, scores, layout_texts, table_structures):
-        self.request_id = request_id
+
+
+class SinglePageConverter:
+    def __init__(self, page_idx, image, class_names, boxes, scores, layout_texts, table_structures):
         self.page_idx = page_idx
         self.image = deepcopy(image)
-        self.class_names, self.boxes, self.scores = class_names, boxes, scores
+        self.class_names = class_names
+        self.boxes = boxes
+        self.scores = scores
         self.layout_texts = layout_texts
         self.table_structures = table_structures
+        
         self.im_shape = self.image.shape[:2]
         self.im_h, self.im_w = self.im_shape
+        self.inches_per_pixel = 8.5 / self.im_w
         self.supported_classes = FINAL_LABELS
-
-        # list of block_type, block_bb, block_score
-        self.block_infos: List = []
-        # List of row, each row is a list of column, each column is a list of block_idx
+        self.raw_layout = []
+        self.layout = []
         self.final_layout = []
         self.layout_content = []
         self.row_column_structure = [0]
-        
-        # init the word doc
-        self.doc = Document()
-        # always take the width of US Letter: 8.5 x 11 inches
-        self.inches_per_pixel = 8.5 / self.im_w
-        self.doc.styles['Normal'].font.name = 'Times New Roman'
-        self.doc.sections[0].page_width = shared.Inches(self.inches_per_pixel*self.im_w)
-        self.doc.sections[0].page_height = shared.Inches(self.inches_per_pixel*self.im_h)
-
-        self.size_over_height_ratio = None
 
 
-    def reconstruct(self):
+    def reconstruct(self, page: pymupdf.Page):
         # Add raw layout as list of layout blocks
-        self.block_infos = self.add_raw_layout()
+        self.raw_layout = self.add_raw_layout()
 
         # Build layout content by merging layout blocks and OCR results
         self.layout_content = self.build_layout_content()
@@ -75,7 +59,7 @@ class ConverterSingle:
         self.size_over_height_ratio, self.mean_char_width, self.mean_word_height = self.calculate_some_spatial_props()
 
         # init processor for each type of block
-        self.init_block_processors()
+        self.init_block_processors(page)
 
         # calculate row bboxes
         self._row_bboxes = []
@@ -85,19 +69,21 @@ class ConverterSingle:
             row_ymin, row_ymax = 1e9, 0
             for col_idx, col in enumerate(row):
                 for block_idx in col:
-                    _, block_bb, _ = self.block_infos[block_idx]
+                    _, block_bb, _ = self.raw_layout[block_idx]
                     row_ymin = min(row_ymin, block_bb[1])
                     row_ymax = max(row_ymax, block_bb[3])
             row_bb = [row_xmin, row_ymin, row_xmax, row_ymax]
             self._row_bboxes.append(row_bb)
+        
 
         print(f'Final layout: {self.final_layout}')
+
         # Start writing to documents block by block
         for row_idx, row in enumerate(self.final_layout):
-            self.process_row(row, row_idx)
+            self.process_row(page, row, row_idx)
 
 
-    def process_row(self, row, row_idx):
+    def process_row(self, page: pymupdf.Page, row: List[List[int]], row_idx: int):
         """Process a row of layout blocks and add them to the document.
         Args:
             row (List[List[int]]): A list of columns, where each column contains indices 
@@ -110,18 +96,26 @@ class ConverterSingle:
         if len(row) == 0:
             raise ValueError('Document row cannot be emptied, check the final_layout')
 
-        column_break, paragraph = False, None
         num_col = len(row)
-        section, col_widths_in_pixel = self.create_section(num_columns=num_col, row_idx=row_idx) # Create section with appropriate number of columns
         row_bb = self._row_bboxes[row_idx]
         
-        # get all column's bb in the row
+        # get all column's real bb in the row (calculate by actual bounding box sizes)
+        col_widths = []
+        for col_idx, col in enumerate(row):
+            # get col width
+            col_width = 0
+            for block_idx in col:
+                _, (xmin, ymin, xmax, ymax), _ = self.raw_layout[block_idx]
+                col_width = max(col_width, xmax - xmin)
+            col_widths.append(col_width)
+        
+        # get all cols proportional bb in the row
         left = row_bb[0]
         col_bbs = []
         row_width = row_bb[2] - row_bb[0]
         for col_idx, col in enumerate(row):
-            col_width = col_widths_in_pixel[col_idx]
-            col_width_ratio = col_width / sum(col_widths_in_pixel)
+            col_width = col_widths[col_idx]
+            col_width_ratio = col_width / sum(col_widths)
             col_bb = [left, row_bb[1], left + col_width_ratio * row_width, row_bb[3]]
             col_bb = list(map(int, col_bb))
             col_bbs.append(col_bb)
@@ -133,36 +127,30 @@ class ConverterSingle:
             # Process each block in the column
             for block_order, block_idx in enumerate(col):
                 layout_content = self.layout_content[block_idx]
-                block_type, coordinates, _ = self.block_infos[block_idx]
+                block_type, coordinates, _ = self.raw_layout[block_idx]
                 block_w = coordinates[2] - coordinates[0]  # Block width
                 
                 # Calculate distance to next block (for spacing)
                 if block_order < len(col) - 1:
-                    next_block = self.block_infos[col[block_order + 1]]
+                    next_block = self.raw_layout[col[block_order + 1]]
                     _, (next_xmin, next_ymin, next_xmax, next_ymax), _ = next_block
                     block_distance = max(next_ymin - coordinates[3], 0)
                 else:
                     block_distance = 0
 
                 if block_type in ['text', 'title', 'list', 'table_of_contents', 'header', 'footer', 'caption', 'equation', 'footnote', 'handwriting']:
-                    self.doc, column_break, paragraph = self.text_processor.process(
-                        self.doc, block_idx, block_distance, column_break, paragraph, area_bb=col_bb
+                    self.text_processor.process(
+                        page, block_idx, block_distance, area_bb=col_bb
                     )
-                elif block_type == 'figure':
-                    self.doc = self.figure_processor.process(self.doc, block_idx)
-                elif block_type == 'table': 
-                    self.doc = self.table_processor.process(self.doc, block_idx)
+                # elif block_type == 'figure':
+                #     self.figure_processor.process(page, block_idx)
+                # elif block_type == 'table': 
+                #     self.table_processor.process(page, block_idx)
             
-            # Add column break if needed
-            if len(row) > 1 and col_idx < len(row) - 1:
-                paragraph = self.doc.add_paragraph()
-                self.add_column_break(paragraph)
-                column_break = True
 
-
-    def init_block_processors(self):
-        init_args = (self.im_shape, self.size_over_height_ratio, self.inches_per_pixel, self.page_text_bb, self.mean_char_width, self.mean_word_height, 
-                     self.block_infos, self.layout_content, self.final_layout, self.image)
+    def init_block_processors(self, page: pymupdf.Page):
+        init_args = (page, self.im_shape, self.size_over_height_ratio, self.inches_per_pixel, self.page_text_bb, self.mean_char_width, self.mean_word_height, 
+                     self.raw_layout, self.layout_content, self.final_layout, self.image)
         self.text_processor = TextBlockProcessor(*init_args)
         self.figure_processor = FigureBlockProcessor(*init_args)
         self.table_processor = TableBlockProcessor(*init_args)
@@ -202,38 +190,16 @@ class ConverterSingle:
 
             # Add layout block info
             l = [name, [xmin, ymin, xmax, ymax], score]
-            self.block_infos.append(l)
+            self.raw_layout.append(l)
         
         self.page_text_bb = [self.text_xmin, self.text_ymin, self.text_xmax, self.text_ymax]
         # cv2.rectangle(self._image, (self.text_xmin, self.text_ymin), (self.text_xmax, self.text_ymax), (0, 0, 255), 2)
         # cv2.imwrite('test.jpg', self._image)
         # pdb.set_trace()
 
-        # Calculate margins in inches based on page boundaries
-        # self.margins = {
-        #     'top': self.text_ymin*self.inches_per_pixel,
-        #     'bottom': (self.im_h - self.text_ymax)*self.inches_per_pixel,
-        #     'left': self.text_xmin*self.inches_per_pixel,
-        #     'right': (self.im_w - self.text_xmax)*self.inches_per_pixel
-        # }
-        self.margins = {
-            'top': 1,
-            'bottom': 1,
-            'left': 1,
-            'right': 1
-        }
-
-        # Apply margins to document sections
-        sections = self.doc.sections
-        for section in sections:
-            section.top_margin = shared.Inches(self.margins['top'])
-            section.bottom_margin = shared.Inches(self.margins['bottom'])
-            section.left_margin = shared.Inches(self.margins['left'])
-            section.right_margin = shared.Inches(self.margins['right'])
-
         # Process layout further
-        self.block_infos = self.handle_overlapping_layout_boxes()
-        return self.block_infos
+        self.raw_layout = self.handle_overlapping_layout_boxes()
+        return self.raw_layout
         
 
     def handle_overlapping_layout_boxes(self):
@@ -254,38 +220,38 @@ class ConverterSingle:
         removed_layout = []
 
         # Find all pairs of overlapping boxes
-        for i in range(len(self.block_infos)):
-            for j in range(i + 1, len(self.block_infos)):
-                if boxes_overlap(self.block_infos[i][1], self.block_infos[j][1]):
+        for i in range(len(self.raw_layout)):
+            for j in range(i + 1, len(self.raw_layout)):
+                if boxes_overlap(self.raw_layout[i][1], self.raw_layout[j][1]):
                     overlap_pairs.append((i, j))
 
         # Process each overlapping pair
         for (i, j) in overlap_pairs:
             # Case 1: First box is figure/table
-            if self.block_infos[i][0] == 'figure' or self.block_infos[i][0] == 'table':
+            if self.raw_layout[i][0] == 'figure' or self.raw_layout[i][0] == 'table':
                 # Skip if second box is also figure/table
-                if self.block_infos[j][0] == 'figure' or self.block_infos[j][0] == 'table':
+                if self.raw_layout[j][0] == 'figure' or self.raw_layout[j][0] == 'table':
                     pass
                 else:
                     # Try to cut off overlapping portion of text box
-                    modified_box = cut_off_box(self.block_infos[j][1], self.block_infos[i][1])
+                    modified_box = cut_off_box(self.raw_layout[j][1], self.raw_layout[i][1])
                     if modified_box:
-                        self.block_infos[i][1] = list(modified_box)
+                        self.raw_layout[i][1] = list(modified_box)
                     else:
                         # If text box fully overlapped, mark for removal
                         removed_layout.append(i)
                 continue
 
             # Case 2: Second box is figure/table
-            if self.block_infos[j][0] == 'figure' or self.block_infos[j][0] == 'table':
+            if self.raw_layout[j][0] == 'figure' or self.raw_layout[j][0] == 'table':
                 # Skip if first box is also figure/table
-                if self.block_infos[i][0] == 'figure' or self.block_infos[i][0] == 'table':
+                if self.raw_layout[i][0] == 'figure' or self.raw_layout[i][0] == 'table':
                     pass
                 else:
                     # Try to cut off overlapping portion of text box
-                    modified_box = cut_off_box(self.block_infos[i][1], self.block_infos[j][1])
+                    modified_box = cut_off_box(self.raw_layout[i][1], self.raw_layout[j][1])
                     if modified_box:
-                        self.block_infos[j][1] = list(modified_box)
+                        self.raw_layout[j][1] = list(modified_box)
                     else:
                         # If text box fully overlapped, mark for removal
                         removed_layout.append(j)
@@ -293,9 +259,9 @@ class ConverterSingle:
                 
         # Remove fully overlapped boxes, starting from highest index
         for idx in sorted(removed_layout, reverse=True):
-            del self.block_infos[idx]
+            del self.raw_layout[idx]
 
-        return self.block_infos
+        return self.raw_layout
 
     def build_layout_content(self):
         """
@@ -338,7 +304,7 @@ class ConverterSingle:
         ]
         """
         removed = []
-        for idx, (block_type, coordinates, _) in enumerate(self.block_infos):
+        for idx, (block_type, coordinates, _) in enumerate(self.raw_layout):
             xmin, ymin, xmax, ymax = [int(i) for i in coordinates]
             block_image = self.image[ymin:ymax, xmin:xmax]
 
@@ -366,7 +332,6 @@ class ConverterSingle:
                         d['words'].append(((xmin, ymin, xmax, ymax), word))
                     d['coords'] = (line_xmin, line_ymin, line_xmax, line_ymax)
                     new_result.append(d)
-                print(f'layout content: {[word[1] for line in new_result for word in line["words"]]}')
                 self.layout_content.append(new_result)
 
             elif block_type == 'figure':
@@ -387,11 +352,10 @@ class ConverterSingle:
 
             else:
                 raise ValueError(f'{block_type} layout is not supported, check layout analysis model')
-
+        
         for idx in sorted(removed, reverse=True):
-            del self.block_infos[idx]
+            del self.raw_layout[idx]
             del self.layout_content[idx]
-            del self.layout_texts[idx]
 
         return self.layout_content
 
@@ -412,7 +376,7 @@ class ConverterSingle:
                 min_col_x, max_col_x = 10000, 0
                 # Find rightmost edge of content in this column
                 for block_idx in row[col_idx]:
-                    _, block_bb, _ = self.block_infos[block_idx]
+                    _, block_bb, _ = self.raw_layout[block_idx]
                     min_col_x = min(block_bb[0], min_col_x)
                     max_col_x = max(block_bb[2], max_col_x)
                 # Column width is distance from left edge to rightmost content
@@ -434,33 +398,17 @@ class ConverterSingle:
             # - self._margins[0] and [2] are left/right margins
             col_widths_in_unit.append(col_widths_in_pixel[col_idx] / total * total_col_width_in_unit)
             
-        
+        # Create new section with continuous break from previous
+        section = self.doc.add_section(WD_SECTION.CONTINUOUS)
+
         # set distance to last section
         if row_idx > 0:
             last_row_bb = self._row_bboxes[row_idx - 1]
             row_bb = self._row_bboxes[row_idx]
             distance = row_bb[1] - last_row_bb[3]
             if distance > 0:
-                # get avg line height in this row
-                line_heights = []
-                for col_idx in range(num_columns):
-                    for block_idx in row[col_idx]:
-                        block_type = self.block_infos[block_idx][0]
-                        if block_type in ['table', 'figure', 'blank']:
-                            continue
-                        layout_content = self.layout_content[block_idx]
-                        for line in layout_content:
-                            try:
-                                line_heights.append(line['coords'][3] - line['coords'][1])
-                            except:
-                                pdb.set_trace()
-                avg_line_height = sum(line_heights) / len(line_heights)
-                num_line = int(distance // avg_line_height)
-                blank_text = '\n' * num_line
-                self.doc.add_paragraph(blank_text)
-                
-        # Create new section with continuous break from previous
-        section = self.doc.add_section(WD_SECTION.CONTINUOUS)
+                distance_in_inches = distance * self.inches_per_pixel
+                section.top_margin = shared.Inches(distance_in_inches)
         
         # Configure section for multiple columns
         sectPr = section._sectPr  # Get section properties
@@ -483,33 +431,32 @@ class ConverterSingle:
         # Add columns configuration to section
         sectPr.append(cols)
 
-
         # print(f'row_idx: {row_idx}')
         # if row_idx in [2]:
         #     print(f'col_widths_in_pixel: {col_widths_in_pixel}')
         #     pdb.set_trace()
-        
+
         return section, col_widths_in_pixel
     
     def build_row_and_col(self):
         ### Groups into rows and columns
-        for row in group(self.block_infos, horizontal_align):
+        for row in group(self.raw_layout, horizontal_align):
             # print(f'row: {row}')
             # pdb.set_trace()
             self.layout.append([]) 
             lrow = list(row)
-            for col in group([self.block_infos[i] for i in lrow], vertical_align):
+            for col in group([self.raw_layout[i] for i in lrow], vertical_align):
                 lcol = list(col)
                 self.layout[-1].append([lrow[lcol[i]] for i in range(len(lcol))])
         
         #Shuffle rows and columns to reading position: top to bottom, left to right
-        self.layout.sort(key=lambda x: min([self.block_infos[j][1][1] for i in x for j in i]))
+        self.layout.sort(key=lambda x: min([self.raw_layout[j][1][1] for i in x for j in i]))
         for row in self.layout:
             # sort blocks in same row left2right
-            row.sort(key=lambda x: min([self.block_infos[i][1][0] for i in x]))
+            row.sort(key=lambda x: min([self.raw_layout[i][1][0] for i in x]))
             for col in row:
                 # sort blocks in same column top2bottom
-                col.sort(key=lambda x: self.block_infos[x][1][1])
+                col.sort(key=lambda x: self.raw_layout[x][1][1])
         
         return self.layout
         
@@ -535,7 +482,7 @@ class ConverterSingle:
         # check if all uppers
         is_all_upper = True
         for block_idx, block_content in enumerate(self.layout_content):
-            block_type, _, _ = self.block_infos[block_idx]
+            block_type, _, _ = self.raw_layout[block_idx]
             if block_type not in ['text', 'list', 'title', 'table_of_contents', 'header', 'footer', 'caption', 'equation', 'footnote', 'handwriting']:
                 continue
             for line in block_content:
@@ -546,7 +493,7 @@ class ConverterSingle:
                 if not is_all_upper:
                     break
 
-        for idx, (block_type, coordinates, _) in enumerate(self.block_infos):
+        for idx, (block_type, coordinates, _) in enumerate(self.raw_layout):
             if block_type in ['text', 'list', 'title', 'table_of_contents', 'header', 'footer', 'caption', 'equation', 'footnote', 'handwriting']:
                 content = self.layout_content[idx]
 
@@ -604,7 +551,7 @@ class ConverterSingle:
             for col_idx, col in enumerate(row):
                 for block_idx in col:
                     content = self.layout_content[block_idx]
-                    block_type, block_bb, _ = self.block_infos[block_idx]
+                    block_type, block_bb, _ = self.raw_layout[block_idx]
                     if block_type not in ['text', 'title', 'list', 'table_of_contents', 'header', 'footer', 'caption', 'equation', 'footnote', 'handwriting']:
                         continue
                     block_text = []
@@ -614,15 +561,32 @@ class ConverterSingle:
                         block_text.append('\n')
                     block_text = " ".join(block_text)
                     print(f'Row {row_idx}, Column {col_idx}, Block {block_idx}: {block_text}')
+
+
+
+class PDFConverter:
+    def __init__(self, result):
+        self.convertes = []
+        for page_idx in range(len(result['images'])):
+            self.convertes.append(
+                SinglePageConverter(
+                    page_idx=page_idx, image=result['images'][page_idx],
+                    class_names=result['layout']['class_names'][page_idx],
+                    boxes=result['layout']['boxes'][page_idx],
+                    scores=result['layout']['scores'][page_idx],
+                    layout_texts=result['reconstruct'][page_idx]['layout_texts'],
+                    table_structures=result['table_structure'][page_idx]
+                )
+            )
+        self.num_pages = len(result['images'])
+        # self.paper_size = pymupdf.paper_size('letter')
+        self.paper_size = result['images'][0].shape[:2][::-1] # (width, height)
+
+    def reconstruct(self):
+        doc = pymupdf.open()
+        for page_idx in range(self.num_pages):
+            page = doc.new_page(width=self.paper_size[0], height=self.paper_size[1])
+            self.convertes[page_idx].reconstruct(page)
+        doc.subset_fonts(verbose=True)
         
-        # self.raw_layout
-        save_dir = f'debug/{self.request_id}/layout_detection'
-        os.makedirs(save_dir, exist_ok=True)
-        image = deepcopy(self.image)
-        for idx, (block_type, bb, score) in enumerate(self.block_infos):
-            x1, y1, x2, y2 = bb
-            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            cv2.putText(image, f'{idx}', (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-            cv2.putText(image, f'{block_type} {score:.2f}', (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-        cv2.imwrite(os.path.join(save_dir, f'raw_layout_{self.page_idx}.jpg'), image)
+        return doc

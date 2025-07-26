@@ -1,26 +1,21 @@
 from copy import deepcopy
+import os
 import cv2
 import numpy as np
 from PIL import Image
 import pdb
 from unidecode import unidecode
-
-from docx import Document
-from docx import shared
-from docx import Document
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-from docx.enum.section import WD_SECTION
-from docx.enum.text import WD_LINE_SPACING, WD_ALIGN_PARAGRAPH
-from docx import shared
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
+import pymupdf
+from pathlib import Path
 
 from .utils import *
 
+current_dir = Path(__file__).parent
+
 class BaseBlockProcessor:
-    def __init__(self, im_shape, size_over_height_ratio, inches_per_pixel, page_text_bb, mean_char_width, mean_char_height,
+    def __init__(self, page: pymupdf.Page, im_shape, size_over_height_ratio, inches_per_pixel, page_text_bb, mean_char_width, mean_char_height,
                  raw_layout, layout_content, final_layout, im):
+        self.page = page
         self.im_shape = im_shape
         self.im_h, self.im_w = im_shape
         self.size_over_height_ratio = size_over_height_ratio
@@ -36,12 +31,12 @@ class BaseBlockProcessor:
 
 # ================= Text blocks =================
 class TextBlockProcessor(BaseBlockProcessor):
-    def __init__(self, im_shape, size_over_height_ratio, inches_per_pixel, page_text_bb, mean_char_width, mean_char_height,
+    def __init__(self, page: pymupdf.Page, im_shape, size_over_height_ratio, inches_per_pixel, page_text_bb, mean_char_width, mean_char_height,
                  raw_layout, layout_content, final_layout, im):
-        super().__init__(im_shape, size_over_height_ratio, inches_per_pixel, page_text_bb, mean_char_width, mean_char_height,
+        super().__init__(page, im_shape, size_over_height_ratio, inches_per_pixel, page_text_bb, mean_char_width, mean_char_height,
                          raw_layout, layout_content, final_layout, im)
     
-    def get_block_alignment(self, layout_content, area_bb, block_bb):
+    def get_block_alignment(self, block_layout_content, area_bb, block_bb):
         """
             Return:
             - alignemnt type: 'Left', 'Right', 'Center', 'Justify'
@@ -52,8 +47,8 @@ class TextBlockProcessor(BaseBlockProcessor):
         DISTANCE_THRESHOLD = 2 * self.mean_char_width
 
         alignment, block_dist_from_margin, is_first_line_indent = 'Left', 0, False
-        if len(layout_content) == 1: # single line
-            line = layout_content[0]
+        if len(block_layout_content) == 1: # single line
+            line = block_layout_content[0]
             line_text = ' '.join([word for _, word in line['words']])
             line_bb = line['coords']
             mid_x = (line_bb[0] + line_bb[2]) / 2
@@ -66,14 +61,14 @@ class TextBlockProcessor(BaseBlockProcessor):
                 alignment = "Center"
 
         else:
-            first_line_xmin = layout_content[0]['coords'][0]
-            line_xmins = [line['coords'][0] for line in layout_content]
-            line_xmaxs = [line['coords'][2] for line in layout_content]
+            first_line_xmin = block_layout_content[0]['coords'][0]
+            line_xmins = [line['coords'][0] for line in block_layout_content]
+            line_xmaxs = [line['coords'][2] for line in block_layout_content]
             mid_points = [(start + end) / 2 for (start, end) in zip(line_xmins, line_xmaxs)]
 
             # if starts and ends of all lines are close to each other, return justify
             if (
-                len(layout_content) >= 3 and
+                len(block_layout_content) >= 3 and
                 abs(block_bb[0]-area_bb[0]) < DISTANCE_THRESHOLD and   # block fills column width
                 abs(block_bb[2]-area_bb[2]) < DISTANCE_THRESHOLD and   # block fills column width
                 all(abs(line_xmin - line_xmins[0]) < DISTANCE_THRESHOLD for line_xmin in line_xmins) and  # all lines have consistent start 
@@ -99,7 +94,7 @@ class TextBlockProcessor(BaseBlockProcessor):
                 alignment = 'Right'
                 is_first_line_indent = False
             
-            # if self.block_idx in [6, 8]:
+            # if self.block_idx in [0, 1, 2, 3]:
             #     print(f'Block idx: {self.block_idx}, Alignment: {alignment}')
             #     pdb.set_trace()
             
@@ -204,14 +199,10 @@ class TextBlockProcessor(BaseBlockProcessor):
         first_next_line_word = next_line['words'][0][1]
         threshold = 2 * self.mean_char_width
 
-        # neu dong tiep theo bat dau voi ki tu la -> la xuong dong
-        if (len(first_next_line_word) >= 1 and first_next_line_word[0].isupper()) or (len(first_next_line_word) >= 2 and first_next_line_word[1].isupper()) or (len(first_next_line_word) >= 1 and not first_next_line_word[0].isalnum()):
-            return True
-
         if (
-            abs(line_bb[2] - block_bb[2]) < 6 * self.mean_char_width and 
-            abs(next_line_bb[0] - block_bb[0]) < threshold and 
-            not (last_line_word.endswith('.') and first_next_line_word[0].isupper())
+            abs(line_bb[2] - block_bb[2]) < 6 * self.mean_char_width and  # line bb must stretches near the end of block bb
+            abs(next_line_bb[0] - block_bb[0]) < threshold and  # next line bb must starts near the start of block bb
+            not (last_line_word.endswith('.') and first_next_line_word[0].isupper())  # next line must not start with uppercase letter
         ):
             return False
         if not first_next_line_word[0].isupper():
@@ -220,13 +211,59 @@ class TextBlockProcessor(BaseBlockProcessor):
         return True
 
 
+    def get_best_font_size(self, page, arch, block_bb, block_text, css_template, alignment, initial_font_size):
+        """
+            Create a temp blank page, insert the html text, get the bounding boxes around the text,
+            compare its height with the block_bb and finally adjust the font size
+        """
+        # Prepare a temp blank page (same size as current page)
+        temp_doc = pymupdf.open()  # create a new empty PDF
+        temp_page = temp_doc.new_page(width=page.rect.width, height=page.rect.height)
+
+        # Try to fit the text in the block_bb by adjusting font size
+        max_iter = 10
+        min_font_size = 6
+        max_font_size = 48
+        target_height = int(block_bb[3] - block_bb[1]) * 1
+        best_font_size = initial_font_size
+        best_height_diff = float('inf')
+
+        for _ in range(max_iter):
+            css = css_template.format(alignment=alignment.lower(), font_size=initial_font_size)
+            temp_page.clean_contents()  # clear previous content
+            temp_page.insert_htmlbox(block_bb, block_text, css=css, archive=arch)
+            # Get the bounding box of the inserted text
+            words = temp_page.get_text("words")
+            if not words:
+                break
+            y0s = [w[1] for w in words]
+            y1s = [w[3] for w in words]
+            text_top = min(y0s)
+            text_bottom = max(y1s)
+            text_height = text_bottom - text_top
+
+            height_diff = abs(text_height - target_height)
+            if height_diff < best_height_diff:
+                best_height_diff = height_diff
+                best_font_size = initial_font_size
+                if best_height_diff / target_height < 0.05:
+                    break
+
+            # Adjust font size
+            if text_height > target_height and initial_font_size > min_font_size:
+                initial_font_size -= 1
+            elif text_height < target_height and initial_font_size < max_font_size:
+                initial_font_size += 1
+            else:
+                break
+        
+        return best_font_size
+
     def process(
         self, 
-        doc: Document,
+        page: pymupdf.Page,
         block_idx,
         block_distance, # distance to next block
-        column_break,
-        paragraph, # old first paragraph of the new column if column_break is True
         area_bb  # row bb if row as a single column, otherwise column bb
     ):
         self.block_idx = block_idx
@@ -238,109 +275,80 @@ class TextBlockProcessor(BaseBlockProcessor):
         alignment, block_dist_from_margin, is_first_line_indent = self.get_block_alignment(layout_content, area_bb, block_bb)
 
         # Calculate font size based on text height
-        font_size = self._get_font_size(layout_content)
+        # font_size = self._get_font_size(layout_content)
         
         # Calculate line spacing
-        line_space = self._get_line_distance(layout_content, font_size)
+        # line_space = self._get_line_distance(layout_content, font_size)
                 
         # Process each line in the block
         block_text = []
         for line_index, line in enumerate(layout_content):
-            # Join words and handle special cases
+            if line_index == 0 and is_first_line_indent:
+                block_text.append('\t\t')
             for _, word in line['words']:
                 block_text.append(f'{word} ')
             is_enter_line = self.is_enter_line(layout_content, line_index, block_bb)
-            if is_enter_line:
+            # if is_enter_line:
+            if True:
                 block_text.append('\n')
             # if block_idx == 7 and line_index in [1,2,3]:
             #     print('is enter line', is_enter_line)
             #     pdb.set_trace()
-            
-        block_text = "".join(block_text)
 
-        # print block info
-        print(f'\n====== Block {block_idx} ======')
-        print(f'Alignment: {alignment}')
-        print(f'Block text: {block_text}')
-        print(f'Is first line indent: {is_first_line_indent}')
-        print(f'Font size: {font_size}')
+        block_text = "".join(block_text).replace('\t', '&nbsp;&nbsp;&nbsp;&nbsp;').replace('\n', '<br>')
+        # if self.block_idx in [6]:
+        #     pdb.set_trace()
+        arch = pymupdf.Archive(os.path.join(current_dir, 'fonts'))
+        css_template = """
+@font-face {{font-family: times; src: url(times.ttf);}}
+@font-face {{font-family: times; src: url(times_bold.ttf);font-weight: bold;}}
+* {{font-family: times; text-align: {alignment}; font-size: {font_size}pt;}}
+"""
+        font_size = self.get_best_font_size(
+            page, arch, block_bb, block_text, 
+            css_template, alignment, initial_font_size=12
+        )
+        css = css_template.format(alignment=alignment.lower(), font_size=font_size)
+        page.insert_htmlbox(block_bb, block_text, css=css, archive=arch)
 
-
-        # Add paragraph and apply formatting
-        if column_break == False: # add new paragraph if column_break is False
-            paragraph = doc.add_paragraph()
-        else:  # if column_break is True, add to the last paragraph and set column_break to False
-            column_break = False
-            
-        # Configure paragraph formatting
-        paragraph_format = paragraph.paragraph_format
-        paragraph_format.line_spacing = shared.Pt(line_space)
-        paragraph_format.space_after = shared.Pt(72 * block_distance * self.inches_per_pixel)
-        paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
-        
-        # Add text and apply font settings
-        run = paragraph.add_run(block_text)
-        run.font.size = shared.Pt(font_size)
-        if block_type == 'title':
-            run.bold = True
-            
-        # Apply alignment
-        if alignment == 'Left':
-            paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        elif alignment == 'Right':
-            paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        elif alignment == 'Center':
-            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        elif alignment == 'Justify':
-            paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-        else:
-            raise ValueError(f'{alignment} alignment is not supported')
-            
-        # Apply first line indentation if needed
-        if is_first_line_indent:
-            paragraph_format.first_line_indent = shared.Inches(0.5)
-        else:
-            paragraph_format.first_line_indent = None
-
-        if alignment == 'Left' and block_dist_from_margin > 0:
-            inch_per_tab = 0.5
-            left_indent = block_dist_from_margin * self.inches_per_pixel
-            if left_indent > 0.3 and left_indent < 0.6: # indent a single tab
-                paragraph_format.left_indent = shared.Inches(inch_per_tab)
-            elif left_indent >= 0.6: # indent two tabs
-                paragraph_format.left_indent = shared.Inches(inch_per_tab * 2)
-            # Do nothing if left_indent <= 0.5
-        
-        return doc, column_break, paragraph
+        return page
 
 
 # ================= Figure blocks =================
 class FigureBlockProcessor(BaseBlockProcessor):
-    def __init__(self, im_shape, size_over_height_ratio, inches_per_pixel, page_text_bb, mean_char_width, mean_char_height,
+    def __init__(self, page: pymupdf.Page, im_shape, size_over_height_ratio, inches_per_pixel, page_text_bb, mean_char_width, mean_char_height,
                  raw_layout, layout_content, final_layout, im):
-        super().__init__(im_shape, size_over_height_ratio, inches_per_pixel, page_text_bb, mean_char_width, mean_char_height,
+        super().__init__(page, im_shape, size_over_height_ratio, inches_per_pixel, page_text_bb, mean_char_width, mean_char_height,
                          raw_layout, layout_content, final_layout, im)
 
-    def process(self, doc, block_idx):
+    def process(self, page: pymupdf.Page, block_idx):
         self.block_idx = block_idx
-        layout_content = self.layout_content[block_idx]
+        image_np = self.layout_content[block_idx]
         raw_layout = self.raw_layout[block_idx]
         block_type, block_bb, _ = raw_layout
         block_w = block_bb[2] - block_bb[0]
 
-        if layout_content.dtype != np.uint8:
-            layout_content = (255 * layout_content).astype(np.uint8)
-        img = Image.fromarray(layout_content)
-        img.save('temp.png')
-        doc.add_picture('temp.png', shared.Inches(block_w * self.inches_per_pixel))
-        return doc
+        if image_np.dtype != np.uint8:
+            image_np = (255 * image_np).astype(np.uint8)
+        
+        # Convert numpy array to Pixmap
+        pix = pymupdf.Pixmap(image_np)
+        # Insert the image into the page at the block_bb rectangle
+        page.insert_image(
+            block_bb,              # where to place the image (rect-like)
+            pixmap=pix,            # image from pixmap
+            keep_proportion=True,  # keep aspect ratio
+            overlay=True,          # put in foreground
+        )
+
+        return page
     
 
 # ================= Table blocks =================
 class TableBlockProcessor(BaseBlockProcessor):
-    def __init__(self, im_shape, size_over_height_ratio, inches_per_pixel, page_text_bb, mean_char_width, mean_char_height,
+    def __init__(self, page: pymupdf.Page, im_shape, size_over_height_ratio, inches_per_pixel, page_text_bb, mean_char_width, mean_char_height,
                  raw_layout, layout_content, final_layout, im):
-        super().__init__(im_shape, size_over_height_ratio, inches_per_pixel, page_text_bb, mean_char_width, mean_char_height,
+        super().__init__(page, im_shape, size_over_height_ratio, inches_per_pixel, page_text_bb, mean_char_width, mean_char_height,
                          raw_layout, layout_content, final_layout, im)
     
     def process(self, doc, block_idx):

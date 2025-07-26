@@ -71,6 +71,7 @@ class TableStructurePredictor:
         # form cells
         list_tables = []
         for page_index, table_infos in enumerate(result['tables']):
+            page_tables = []
             for table_index in range(len(table_infos['images'])):
                 boxes = table_infos['all_boxes'][table_index]
                 scores = table_infos['all_scores'][table_index]
@@ -100,7 +101,8 @@ class TableStructurePredictor:
                     'coordinates': table_infos['boxes'][table_index],
                     'layout_idx': table_infos['index'][table_index]
                 }
-                list_tables.append(table_info)
+                page_tables.append(table_info)
+            list_tables.append(page_tables)
 
         result['table_structure'] = list_tables
         return result

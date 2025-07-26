@@ -13,12 +13,13 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 from html.parser import HTMLParser
 from shapely.geometry import Polygon
 import pdb
+import pymupdf
 
-from .convert_multi import ConverterMulti
+from .converter import PDFConverter
 from utils.utils import *
 
 
-class ReconstructPredictor:
+class PDFReconstructPredictor:
     def __init__(self, common_cfg, model_cfg) -> None:
         self.common_cfg = common_cfg
         self.model_cfg = model_cfg
@@ -118,24 +119,30 @@ class ReconstructPredictor:
 
         # sort lines and texts into layout boxes
         result = self.gather_and_sort_boxes(result)
-        converter = ConverterMulti(result)
-        doc = converter.reconstruct()
+        converter = PDFConverter(result)
+        doc: pymupdf.Document = converter.reconstruct()
         result['final_doc'] = doc
         return result
     
 
 if __name__ == '__main__':
-    from utils.utils import load_yaml, convert_docx_to_pdf
+    from utils.utils import load_yaml
     import pickle
+    from pdf2docx import Converter
 
     common_cfg = load_yaml('configs/common.yaml')
     model_cfg = load_yaml('configs/model.yaml')
-    predictor = ReconstructPredictor(common_cfg, model_cfg)
+    predictor = PDFReconstructPredictor(common_cfg, model_cfg)
     
     with open('result.pkl', 'rb') as f:
         result = pickle.load(f)
     result = predictor.predict(result)
     doc = result['final_doc']
-    doc.save('output.docx')
-    convert_docx_to_pdf('output.docx', 'output.pdf')
+    doc.ez_save('output.pdf')
+    print(f'saved to output.pdf')
+    
+    cv = Converter('output.pdf')
+    cv.convert('output.docx')
+    cv.close()
+    print(f'saved to output.docx')
     print('done!')

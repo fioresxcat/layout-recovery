@@ -7,3 +7,5 @@ __pycache__/
 output*
 docx_output
 content.pkl
+debug/
+result.pkl

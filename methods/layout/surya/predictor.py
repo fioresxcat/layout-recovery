@@ -13,44 +13,45 @@ class SuryaLayoutPredictor:
     def __init__(self, common_cfg, model_cfg):
         self.model = LayoutPredictor()
         self.batch_size = 4
-        # self.label_map = {
-        #     'Blank': 'blank',
-        #     'Text': 'text',
-        #     'TextInlineMath': 'equation',
-        #     'Code': 'text',
-        #     'SectionHeader': 'title',
-        #     'Caption': 'caption',
-        #     'Footnote': 'footnote',
-        #     'Equation': 'equation',
-        #     'ListItem': 'list',
-        #     'PageFooter': 'footer',
-        #     'PageHeader': 'header',
-        #     'Picture': 'figure',
-        #     'Figure': 'figure',
-        #     'Table': 'table',
-        #     'Form': 'text',
-        #     'TableOfContents': 'table_of_contents',
-        #     'Handwriting': 'handwriting'
-        # }
+        # self.label_map = {}
         self.label_map = {
-            'Blank': 'text',
+            'Blank': 'blank',
             'Text': 'text',
-            'TextInlineMath': 'text',
+            'TextInlineMath': 'equation',
             'Code': 'text',
             'SectionHeader': 'title',
-            'Caption': 'text',
-            'Footnote': 'text',
-            'Equation': 'text',
+            'Caption': 'caption',
+            'Footnote': 'footnote',
+            'Equation': 'equation',
             'ListItem': 'list',
-            'PageFooter': 'text',
-            'PageHeader': 'text',
+            'PageFooter': 'footer',
+            'PageHeader': 'header',
             'Picture': 'figure',
             'Figure': 'figure',
             'Table': 'table',
             'Form': 'text',
-            'TableOfContents': 'text',
-            'Handwriting': 'text'
+            'TableOfContents': 'table_of_contents',
+            'Handwriting': 'handwriting'
         }
+        # self.label_map = {
+        #     'Blank': 'text',
+        #     'Text': 'text',
+        #     'TextInlineMath': 'text',
+        #     'Code': 'text',
+        #     'SectionHeader': 'title',
+        #     'Caption': 'text',
+        #     'Footnote': 'text',
+        #     'Equation': 'text',
+        #     'ListItem': 'list',
+        #     'PageFooter': 'text',
+        #     'PageHeader': 'text',
+        #     'Picture': 'figure',
+        #     'Figure': 'figure',
+        #     'Table': 'table',
+        #     'Form': 'text',
+        #     'TableOfContents': 'text',
+        #     'Handwriting': 'text'
+        # }
         assert all(label in FINAL_LABELS for label in self.label_map.values())
         
 
@@ -63,7 +64,7 @@ class SuryaLayoutPredictor:
         for image_index, pred in enumerate(preds):
             pred.bboxes.sort(key=lambda x: x.position)
             for box_info in pred.bboxes:
-                class_name = self.label_map[box_info.label]
+                class_name = self.label_map.get(box_info.label, box_info.label)
                 score = box_info.confidence
                 bb = poly2box(box_info.polygon)
                 results[image_index][0].append(bb)

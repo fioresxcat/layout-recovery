@@ -57,36 +57,13 @@ def horizontal_align(box1, box2):
     return L1 + L2 > L
 
 
-# def vertical_align(box1, box2):
-#     box1 = box1[1]
-#     box2 = box2[1]
-#     L1 = box1[2] - box1[0]
-#     L2 = box2[2] - box2[0]
-#     L = max(box1[2], box2[2]) - min(box1[0], box2[0])
-    
-#     return L1 + L2 > L
-
 def vertical_align(box1, box2):
     box1 = box1[1]
     box2 = box2[1]
-    # box: (x1, y1, x2, y2)
-    x1_min, x1_max = box1[0], box1[2]
-    x2_min, x2_max = box2[0], box2[2]
-    box1_w = x1_max - x1_min
-    box2_w = x2_max - x2_min
-    union_min = min(x1_min, x2_min)
-    union_max = max(x1_max, x2_max)
-    union_w = union_max - union_min
-    # intersection
-    inter_min = max(x1_min, x2_min)
-    inter_max = min(x1_max, x2_max)
-    inter_w = max(0, inter_max - inter_min)
-    r1 = box1_w / union_w if union_w > 0 else 0
-    r2 = box2_w / union_w if union_w > 0 else 0
-    iou = inter_w / union_w if union_w > 0 else 0
-
-    return r1 > 0.7 or r2 > 0.7 or iou > 0.5
-
+    L1 = box1[2] - box1[0]
+    L2 = box2[2] - box2[0]
+    L = max(box1[2], box2[2]) - min(box1[0], box2[0])
+    return L1 + L2 > L
 
 from collections import deque
 

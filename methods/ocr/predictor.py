@@ -6,10 +6,42 @@ from PIL import Image
 import pdb
 import os
 from modules.ocr_parseq.base_ocr import BaseOCR
+from utils.utils import sort_and_merge_box
+
 
 class OCRPredictor:
     def __init__(self, common_cfg, model_cfg):
         self.ocr = BaseOCR(common_cfg, model_cfg)
+    
+    def remove_contained_segments(self, segment_bbs, segment_texts):
+        """
+        Remove segments that are contained in other segments (>95% of their area is inside another segment).
+        If a segment is contained, prepend/append its text to the container's text depending on whether it is nearer the top or bottom.
+        """
+        from utils.utils import iou_bbox
+        keep = [True] * len(segment_bbs)
+        updated_texts = list(segment_texts)
+        for i, boxA in enumerate(segment_bbs):
+            for j, boxB in enumerate(segment_bbs):
+                if i == j:
+                    continue
+                r1, r2, iou = iou_bbox(boxA, boxB)
+                if r1 > 0.95:
+                    # Determine if A is nearer the top or bottom of B
+                    centerA = (boxA[1] + boxA[3]) / 2
+                    centerB = (boxB[1] + boxB[3]) / 2
+                    if centerA < centerB:
+                        # Nearer the top: prepend
+                        updated_texts[j] = segment_texts[i] + ' ' + updated_texts[j]
+                    else:
+                        # Nearer the bottom: append
+                        updated_texts[j] = updated_texts[j] + ' ' + segment_texts[i]
+                    keep[i] = False
+                    break
+        filtered_bbs = [bb for bb, k in zip(segment_bbs, keep) if k]
+        filtered_texts = [text for text, k in zip(updated_texts, keep) if k]
+        return filtered_bbs, filtered_texts
+
 
     def predict(self, result):
         batch_images = []
@@ -28,12 +60,25 @@ class OCRPredictor:
             result['ocr']['raw_words'].append(words[index:index+page_len])
             index += page_len
 
-        # # map text to table
-        # for page_index, table_infos in enumerate(result['tables']):
-        #     table_infos['text'] = []
-        #     for table_index, list_rois in enumerate(table_infos['text_images']):
-        #         table_infos['text'].append([])
-        #         for box, roi, text in zip(table_infos['text_boxes'][table_index], list_rois, table_infos['raw_words'][table_index]):
-        #             table_infos['text'][table_index].append({'box':box, 'roi':roi, 'text':text})
+        # build segments
+        result['ocr']['segments'] = []
+        for page_index, (text_bbs, words) in enumerate(zip(result['text_detection']['coords'], result['ocr']['raw_words'])):
+            segments = []
+            assert len(text_bbs) == len(words)
+
+            p4_bbs = []
+            list_hs = []
+            for p8_bb in text_bbs:
+                xmin, xmax = min(p8_bb[0::2]), max(p8_bb[0::2])
+                ymin, ymax = min(p8_bb[1::2]), max(p8_bb[1::2])
+                list_hs.append(ymax - ymin)
+                p4_bbs.append([xmin, ymin, xmax, ymax])
+            avg_h = np.average(list_hs)
+
+            line_text, line_bbs = sort_and_merge_box(p4_bbs, words, d_thres=1.2 * avg_h)
+            line_bbs, line_text = self.remove_contained_segments(line_bbs, line_text)
+            for line_bb, line_text in zip(line_bbs, line_text):
+                segments.append([line_bb, line_text])
+            result['ocr']['segments'].append(segments)
 
         return result
