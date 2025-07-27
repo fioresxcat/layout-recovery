@@ -52,11 +52,7 @@ class ConverterMulti:
                 result['request_id'],
                 i, 
                 result['images'][i], 
-                result['layout']['class_names'][i], 
-                result['layout']['boxes'][i],
-                result['layout']['scores'][i],
-                result['reconstruct'][i]['layout_texts'],
-                result['table_structure'][i]
+                result['blocks'][i]
             )
             self._converters.append(converter)
     

@@ -367,17 +367,18 @@ class LayoutPredictor:
 
             boxes, scores, class_names = self.correct_boxes(text_segments, boxes, scores, class_names, image)
 
-            # draw boxes
-            im = image.copy()
-            for box in boxes:
-                x1, y1, x2, y2 = box
-                cv2.rectangle(im, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            cv2.imwrite(f'test.jpg', im)
-            pdb.set_trace()
+            # # draw boxes
+            # im = image.copy()
+            # for box in boxes:
+            #     x1, y1, x2, y2 = box
+            #     cv2.rectangle(im, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            # cv2.imwrite(f'test.jpg', im)
+            # pdb.set_trace()
 
             result['layout']['boxes'].append(boxes)
             result['layout']['scores'].append(scores)
             result['layout']['class_names'].append(class_names)
+            
             # process table
             tables = {'images': [], 'boxes': [], 'index': []}
             for idx, (box, cl) in enumerate(zip(boxes, class_names)):

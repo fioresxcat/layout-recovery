@@ -1,3 +1,30 @@
+from dataclasses import dataclass
+from typing_extensions import List, Dict, Tuple, Any, Optional
+import numpy as np
+
+@dataclass
+class Block:
+    type: str
+    bbox: tuple[int, int, int, int]
+    score: float
+    image: np.ndarray
+
+
+@dataclass
+class Line:
+    words: List[Dict]
+    segments: List[Dict]
+    bbox: tuple[int, int, int, int]
+
+@dataclass
+class TextBlock(Block):
+    lines: List[Line]
+
+@dataclass
+class TableBlock(Block):
+    cells: List[Dict]
+
+
 def boxes_overlap(box1, box2):
     """
     Check if two boxes overlap.

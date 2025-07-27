@@ -19,51 +19,58 @@ from docx.oxml.ns import qn
 from unidecode import unidecode
 
 from methods.layout.label_list import FINAL_LABELS
-from .utils import group, boxes_overlap, cut_off_box, vertical_align, horizontal_align, any_upper
+from .utils import *
 from .block_processors import *
 
 class ConverterSingle:
-    def __init__(self, request_id, page_idx, image, class_names, boxes, scores, layout_texts, table_structures):
+    def __init__(self, request_id, page_idx, image, blocks):
         self.request_id = request_id
         self.page_idx = page_idx
         self.image = deepcopy(image)
-        self.class_names, self.boxes, self.scores = class_names, boxes, scores
-        self.layout_texts = layout_texts
-        self.table_structures = table_structures
+        self.blocks: List[Block] = blocks
         self.im_shape = self.image.shape[:2]
         self.im_h, self.im_w = self.im_shape
-        self.supported_classes = FINAL_LABELS
 
-        # list of block_type, block_bb, block_score
-        self.block_infos: List = []
+
+        self.content_area: List = self.get_page_content_bbox()  # the overall bb covering all blocks
         # List of row, each row is a list of column, each column is a list of block_idx
         self.final_layout = []
-        self.layout_content = []
         self.row_column_structure = [0]
         
         # init the word doc
         self.doc = Document()
-        # always take the width of US Letter: 8.5 x 11 inches
-        self.inches_per_pixel = 8.5 / self.im_w
+        page_width_inch = 8.5 # always take the width of US Letter: 8.5 x 11 inches, adjust the height accordingly
         self.doc.styles['Normal'].font.name = 'Times New Roman'
-        self.doc.sections[0].page_width = shared.Inches(self.inches_per_pixel*self.im_w)
-        self.doc.sections[0].page_height = shared.Inches(self.inches_per_pixel*self.im_h)
+        section = self.doc.sections[0]
+        section.page_width = shared.Inches(page_width_inch)
+        section.page_height = shared.Inches(page_width_inch / self.im_w * self.im_h)
+        section.top_margin = shared.Inches(self.inches_per_pixel * self.content_area[1])
+        section.bottom_margin = section.top_margin
+        section.left_margin = shared.Inches(self.inches_per_pixel * self.content_area[0])
+        section.right_margin = section.left_margin
 
-        self.size_over_height_ratio = None
+        # some global properties
+        self.inches_per_pixel = page_width_inch / self.im_w
+        self.size_over_height_ratio, self.mean_char_width, self.mean_word_height = self.calculate_some_spatial_props()
+    
+
+    def get_page_content_bbox(self):
+        content_xmin, content_ymin, content_xmax, content_ymax = 10000, 10000, 0, 0
+        for block in self.blocks:
+            xmin, ymin, xmax, ymax = block.bbox
+            content_xmin = min(content_xmin, xmin)
+            content_ymin = min(content_ymin, ymin)
+            content_xmax = max(content_xmax, xmax)
+            content_ymax = max(content_ymax, ymax)
+        return [content_xmin, content_ymin, content_xmax, content_ymax]
 
 
     def reconstruct(self):
-        # Add raw layout as list of layout blocks
-        self.block_infos = self.add_raw_layout()
-
-        # Build layout content by merging layout blocks and OCR results
-        self.layout_content = self.build_layout_content()
-
         # Group layout block into rows and columns
         self.layout = self.build_row_and_col()
         self.log_layout()
 
-        # build final layout from layout by merging rows that have the same number of columns
+        # merging rows that have the same number of columns
         for row in self.layout:
             num_columns = len(row)
             if num_columns != self.row_column_structure[-1]:
@@ -72,7 +79,6 @@ class ConverterSingle:
             for i in range(num_columns):
                 self.final_layout[-1][i] += row[i]
         self.row_column_structure = self.row_column_structure[1:]
-        self.size_over_height_ratio, self.mean_char_width, self.mean_word_height = self.calculate_some_spatial_props()
 
         # init processor for each type of block
         self.init_block_processors()
@@ -85,7 +91,7 @@ class ConverterSingle:
             row_ymin, row_ymax = 1e9, 0
             for col_idx, col in enumerate(row):
                 for block_idx in col:
-                    _, block_bb, _ = self.block_infos[block_idx]
+                    block_bb = self.blocks[block_idx].bbox
                     row_ymin = min(row_ymin, block_bb[1])
                     row_ymax = max(row_ymax, block_bb[3])
             row_bb = [row_xmin, row_ymin, row_xmax, row_ymax]
@@ -132,15 +138,16 @@ class ConverterSingle:
             col_bb = col_bbs[col_idx]
             # Process each block in the column
             for block_order, block_idx in enumerate(col):
-                layout_content = self.layout_content[block_idx]
-                block_type, coordinates, _ = self.block_infos[block_idx]
+                block = self.blocks[block_idx]
+                block_type = block.type
+                coordinates = block.bbox
                 block_w = coordinates[2] - coordinates[0]  # Block width
                 
                 # Calculate distance to next block (for spacing)
                 if block_order < len(col) - 1:
-                    next_block = self.block_infos[col[block_order + 1]]
-                    _, (next_xmin, next_ymin, next_xmax, next_ymax), _ = next_block
-                    block_distance = max(next_ymin - coordinates[3], 0)
+                    next_block = self.blocks[col[block_order + 1]]
+                    next_coordinates = next_block.bbox
+                    block_distance = max(next_coordinates[1] - coordinates[3], 0)
                 else:
                     block_distance = 0
 
@@ -162,238 +169,11 @@ class ConverterSingle:
 
     def init_block_processors(self):
         init_args = (self.im_shape, self.size_over_height_ratio, self.inches_per_pixel, self.page_text_bb, self.mean_char_width, self.mean_word_height, 
-                     self.block_infos, self.layout_content, self.final_layout, self.image)
+                     self.blocks, self.final_layout, self.image)
         self.text_processor = TextBlockProcessor(*init_args)
         self.figure_processor = FigureBlockProcessor(*init_args)
         self.table_processor = TableBlockProcessor(*init_args)
 
-
-    def add_raw_layout(self):
-        """Add raw layout information to self._raw_layout and set document margins.
-
-        self._raw_layout structure:
-        [
-            # Each element represents one layout block:
-            [
-                name,       # String - The class name of the layout block (e.g. 'text', 'table', etc)
-                [xmin, ymin, xmax, ymax],  # List[int] - Coordinates of bounding box
-                score      # Float - Confidence score from layout detection
-            ],
-            ...
-        ]
-
-        Example:
-        self._raw_layout = [
-            ['text', [100, 50, 300, 100], 0.95],  # A text block
-            ['table', [50, 200, 400, 500], 0.87], # A table block
-            ...
-        ]
-        """
-        # Initialize page boundaries to find margins
-        self.text_xmin, self.text_xmax, self.text_ymin, self.text_ymax = 10000, 0, 10000, 0
-
-        # Iterate through layout blocks and build self._raw_layout
-        for name, coordinates, score in zip(self.class_names, self.boxes, self.scores):
-            xmin, ymin, xmax, ymax = coordinates
-            
-            # Track overall page boundaries
-            self.text_xmin, self.text_xmax = min(self.text_xmin, xmin), max(self.text_xmax, xmax)
-            self.text_ymin, self.text_ymax = min(self.text_ymin, ymin), max(self.text_ymax, ymax)
-
-            # Add layout block info
-            l = [name, [xmin, ymin, xmax, ymax], score]
-            self.block_infos.append(l)
-        
-        self.page_text_bb = [self.text_xmin, self.text_ymin, self.text_xmax, self.text_ymax]
-        # cv2.rectangle(self._image, (self.text_xmin, self.text_ymin), (self.text_xmax, self.text_ymax), (0, 0, 255), 2)
-        # cv2.imwrite('test.jpg', self._image)
-        # pdb.set_trace()
-
-        # Calculate margins in inches based on page boundaries
-        # self.margins = {
-        #     'top': self.text_ymin*self.inches_per_pixel,
-        #     'bottom': (self.im_h - self.text_ymax)*self.inches_per_pixel,
-        #     'left': self.text_xmin*self.inches_per_pixel,
-        #     'right': (self.im_w - self.text_xmax)*self.inches_per_pixel
-        # }
-        self.margins = {
-            'top': 1,
-            'bottom': 1,
-            'left': 1,
-            'right': 1
-        }
-
-        # Apply margins to document sections
-        sections = self.doc.sections
-        for section in sections:
-            section.top_margin = shared.Inches(self.margins['top'])
-            section.bottom_margin = shared.Inches(self.margins['bottom'])
-            section.left_margin = shared.Inches(self.margins['left'])
-            section.right_margin = shared.Inches(self.margins['right'])
-
-        # Process layout further
-        self.block_infos = self.handle_overlapping_layout_boxes()
-        return self.block_infos
-        
-
-    def handle_overlapping_layout_boxes(self):
-        """Process overlapping layout boxes to handle conflicts between figures/tables and text.
-
-        Main logic:
-        1. Find all pairs of overlapping layout boxes
-        2. For each overlapping pair:
-           - If one is figure/table and other is text, modify or remove the text box
-           - If both are figures/tables, leave them unchanged
-        3. Remove any layout boxes that were completely overlapped
-
-        This ensures figures and tables take precedence over text when they overlap.
-        """
-        # Store pairs of overlapping box indices
-        overlap_pairs = []
-        # Track indices of boxes to remove
-        removed_layout = []
-
-        # Find all pairs of overlapping boxes
-        for i in range(len(self.block_infos)):
-            for j in range(i + 1, len(self.block_infos)):
-                if boxes_overlap(self.block_infos[i][1], self.block_infos[j][1]):
-                    overlap_pairs.append((i, j))
-
-        # Process each overlapping pair
-        for (i, j) in overlap_pairs:
-            # Case 1: First box is figure/table
-            if self.block_infos[i][0] == 'figure' or self.block_infos[i][0] == 'table':
-                # Skip if second box is also figure/table
-                if self.block_infos[j][0] == 'figure' or self.block_infos[j][0] == 'table':
-                    pass
-                else:
-                    # Try to cut off overlapping portion of text box
-                    modified_box = cut_off_box(self.block_infos[j][1], self.block_infos[i][1])
-                    if modified_box:
-                        self.block_infos[i][1] = list(modified_box)
-                    else:
-                        # If text box fully overlapped, mark for removal
-                        removed_layout.append(i)
-                continue
-
-            # Case 2: Second box is figure/table
-            if self.block_infos[j][0] == 'figure' or self.block_infos[j][0] == 'table':
-                # Skip if first box is also figure/table
-                if self.block_infos[i][0] == 'figure' or self.block_infos[i][0] == 'table':
-                    pass
-                else:
-                    # Try to cut off overlapping portion of text box
-                    modified_box = cut_off_box(self.block_infos[i][1], self.block_infos[j][1])
-                    if modified_box:
-                        self.block_infos[j][1] = list(modified_box)
-                    else:
-                        # If text box fully overlapped, mark for removal
-                        removed_layout.append(j)
-                continue
-                
-        # Remove fully overlapped boxes, starting from highest index
-        for idx in sorted(removed_layout, reverse=True):
-            del self.block_infos[idx]
-
-        return self.block_infos
-
-    def build_layout_content(self):
-        """
-        Build layout content from raw layout and OCR results.
-        The resulting self._layout_content structure looks like:
-        [
-            # For text/title/list blocks:
-            [
-                # First line in text block
-                {
-                    'words': [
-                        ((xmin,ymin,xmax,ymax), "word1"),  # (word bbox, text)
-                        ((xmin,ymin,xmax,ymax), "word2"),
-                        ...
-                    ],
-                    'coords': (line_xmin,line_ymin,line_xmax,line_ymax)  # Overall line bbox
-                },
-                # Second line
-                {
-                    'words': [...],
-                    'coords': (...)
-                },
-                ...
-            ],
-
-            # For figure blocks:
-            numpy.ndarray,  # Image array of figure region
-
-            # For table blocks:
-            {
-                'layout_idx': int,      # Index in layout
-                'image_index': int,     # Page number
-                'extracted_value': [     # Table cell contents
-                    ["cell1", "cell2"],  # First row
-                    ["cell3", "cell4"],  # Second row
-                    ...
-                ]
-            },
-            ...
-        ]
-        """
-        removed = []
-        for idx, (block_type, coordinates, _) in enumerate(self.block_infos):
-            xmin, ymin, xmax, ymax = [int(i) for i in coordinates]
-            block_image = self.image[ymin:ymax, xmin:xmax]
-
-            if block_type in ['text', 'title', 'list', 'table_of_contents', 'header', 'footer', 'caption', 'equation', 'footnote', 'handwriting']:
-                ocr_result = self.layout_texts[idx]
-                if len(ocr_result) == 0:
-                    removed.append(idx)
-                # Straighten skewed boxes ?
-                new_result = []
-                for line in ocr_result:
-                    d = {'words': []}
-                    line_xmin = 10000
-                    line_xmax = 0
-                    line_ymin = 10000
-                    line_ymax = 0
-                    for poly, word in line:
-                        xmin = min(poly[::2])
-                        line_xmin = min(line_xmin, xmin)
-                        xmax = max(poly[::2])
-                        line_xmax = max(line_xmax, xmax)
-                        ymin = min(poly[1::2])
-                        line_ymin = min(line_ymin, ymin)
-                        ymax = max(poly[1::2])
-                        line_ymax = max(line_ymax, ymax)
-                        d['words'].append(((xmin, ymin, xmax, ymax), word))
-                    d['coords'] = (line_xmin, line_ymin, line_xmax, line_ymax)
-                    new_result.append(d)
-                print(f'layout content: {[word[1] for line in new_result for word in line["words"]]}')
-                self.layout_content.append(new_result)
-
-            elif block_type == 'figure':
-                self.layout_content.append(block_image)
-
-            elif block_type == 'table':
-                for table_info in self.table_structures:
-                    if idx == table_info['layout_idx'] and self.page_idx == table_info['image_index']:
-                        self.layout_content.append(table_info)
-                        if table_info['extracted_value'] == []:
-                            removed.append(idx)
-                        break
-                else:
-                    raise ValueError('Table structure not found!')
-            
-            elif block_type == 'blank':
-                removed.append(idx)
-
-            else:
-                raise ValueError(f'{block_type} layout is not supported, check layout analysis model')
-
-        for idx in sorted(removed, reverse=True):
-            del self.block_infos[idx]
-            del self.layout_content[idx]
-            del self.layout_texts[idx]
-
-        return self.layout_content
 
     def create_section(self, num_columns: int=None, row_idx=None):
         """Create a section with the specified number of columns.
@@ -412,7 +192,7 @@ class ConverterSingle:
                 min_col_x, max_col_x = 10000, 0
                 # Find rightmost edge of content in this column
                 for block_idx in row[col_idx]:
-                    _, block_bb, _ = self.block_infos[block_idx]
+                    block_bb = self.blocks[block_idx].bbox
                     min_col_x = min(block_bb[0], min_col_x)
                     max_col_x = max(block_bb[2], max_col_x)
                 # Column width is distance from left edge to rightmost content
@@ -445,13 +225,13 @@ class ConverterSingle:
                 line_heights = []
                 for col_idx in range(num_columns):
                     for block_idx in row[col_idx]:
-                        block_type = self.block_infos[block_idx][0]
+                        block = self.blocks[block_idx]
+                        block_type = block.type
                         if block_type in ['table', 'figure', 'blank']:
                             continue
-                        layout_content = self.layout_content[block_idx]
-                        for line in layout_content:
+                        for line in block.lines:
                             try:
-                                line_heights.append(line['coords'][3] - line['coords'][1])
+                                line_heights.append(line.bbox[3] - line.bbox[1])
                             except:
                                 pdb.set_trace()
                 avg_line_height = sum(line_heights) / len(line_heights)
@@ -493,23 +273,23 @@ class ConverterSingle:
     
     def build_row_and_col(self):
         ### Groups into rows and columns
-        for row in group(self.block_infos, horizontal_align):
+        for row in group([block.bbox for block in self.blocks], horizontal_align):
             # print(f'row: {row}')
             # pdb.set_trace()
             self.layout.append([]) 
             lrow = list(row)
-            for col in group([self.block_infos[i] for i in lrow], vertical_align):
+            for col in group([self.blocks[i].bbox for i in lrow], vertical_align):
                 lcol = list(col)
                 self.layout[-1].append([lrow[lcol[i]] for i in range(len(lcol))])
         
-        #Shuffle rows and columns to reading position: top to bottom, left to right
-        self.layout.sort(key=lambda x: min([self.block_infos[j][1][1] for i in x for j in i]))
+        # sort rows and columns to reading position: top to bottom, left to right
+        self.layout.sort(key=lambda x: min([self.blocks[j].bbox[1] for i in x for j in i]))
         for row in self.layout:
             # sort blocks in same row left2right
-            row.sort(key=lambda x: min([self.block_infos[i][1][0] for i in x]))
+            row.sort(key=lambda x: min([self.blocks[i].bbox[0] for i in x]))
             for col in row:
                 # sort blocks in same column top2bottom
-                col.sort(key=lambda x: self.block_infos[x][1][1])
+                col.sort(key=lambda x: self.blocks[x].bbox[1])
         
         return self.layout
         
@@ -520,7 +300,7 @@ class ConverterSingle:
         br = OxmlElement('w:br')
         br.set(qn('w:type'), 'column')
         run._r.append(br)
-        return
+        
     
 
     def calculate_some_spatial_props(self):
@@ -534,28 +314,28 @@ class ConverterSingle:
 
         # check if all uppers
         is_all_upper = True
-        for block_idx, block_content in enumerate(self.layout_content):
-            block_type, _, _ = self.block_infos[block_idx]
+        for block_idx, block in enumerate(self.blocks):
+            block_type = block.type
             if block_type not in ['text', 'list', 'title', 'table_of_contents', 'header', 'footer', 'caption', 'equation', 'footnote', 'handwriting']:
                 continue
-            for line in block_content:
-                for _, word in line['words']:
-                    if not any_upper(word):
+            for line in block.lines:
+                for word_info in line.words:
+                    word_text = word_info['text']
+                    if not any_upper(word_text):
                         is_all_upper = False
                         break
                 if not is_all_upper:
                     break
 
-        for idx, (block_type, coordinates, _) in enumerate(self.block_infos):
+        for idx, block in enumerate(self.blocks):
+            block_type = block.type
             if block_type in ['text', 'list', 'title', 'table_of_contents', 'header', 'footer', 'caption', 'equation', 'footnote', 'handwriting']:
-                content = self.layout_content[idx]
-
                 # Calculate average character width and height for lowercase words
                 widths, heights = [],[]
-                for line in content:
-                    for word in line['words']:
-                        word_text = word[1]
-                        word_box = word[0]
+                for line in block.lines:
+                    for word_info in line.words:
+                        word_text = word_info['text']
+                        word_box = word_info['bbox']
                         # Skip words with uppercase letters
                         if any_upper(word_text) and not is_all_upper:
                             continue
@@ -603,14 +383,14 @@ class ConverterSingle:
         for row_idx, row in enumerate(self.layout):
             for col_idx, col in enumerate(row):
                 for block_idx in col:
-                    content = self.layout_content[block_idx]
-                    block_type, block_bb, _ = self.block_infos[block_idx]
+                    block = self.blocks[block_idx]
+                    block_type = block.type
                     if block_type not in ['text', 'title', 'list', 'table_of_contents', 'header', 'footer', 'caption', 'equation', 'footnote', 'handwriting']:
                         continue
                     block_text = []
-                    for line in content:
-                        for word in line['words']:
-                            block_text.append(word[1])
+                    for line in block.lines:
+                        for word_info in line.words:
+                            block_text.append(word_info['text'])
                         block_text.append('\n')
                     block_text = " ".join(block_text)
                     print(f'Row {row_idx}, Column {col_idx}, Block {block_idx}: {block_text}')
@@ -619,10 +399,10 @@ class ConverterSingle:
         save_dir = f'debug/{self.request_id}/layout_detection'
         os.makedirs(save_dir, exist_ok=True)
         image = deepcopy(self.image)
-        for idx, (block_type, bb, score) in enumerate(self.block_infos):
-            x1, y1, x2, y2 = bb
+        for idx, block in enumerate(self.blocks):
+            x1, y1, x2, y2 = block.bbox
             cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 2)
             cv2.putText(image, f'{idx}', (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
             cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-            cv2.putText(image, f'{block_type} {score:.2f}', (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+            cv2.putText(image, f'{block.type} {block.score:.2f}', (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
         cv2.imwrite(os.path.join(save_dir, f'raw_layout_{self.page_idx}.jpg'), image)

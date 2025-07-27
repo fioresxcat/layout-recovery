@@ -20,7 +20,7 @@ from .utils import *
 
 class BaseBlockProcessor:
     def __init__(self, im_shape, size_over_height_ratio, inches_per_pixel, page_text_bb, mean_char_width, mean_char_height,
-                 raw_layout, layout_content, final_layout, im):
+                 layout_blocks, final_layout, im):
         self.im_shape = im_shape
         self.im_h, self.im_w = im_shape
         self.size_over_height_ratio = size_over_height_ratio
@@ -29,19 +29,18 @@ class BaseBlockProcessor:
         self.mean_char_width = mean_char_width
         self.mean_char_height = mean_char_height
         self.block_idx = None
-        self.raw_layout = raw_layout
-        self.layout_content = layout_content
+        self.layout_blocks = layout_blocks
         self.final_layout = final_layout
         self.im = im
 
 # ================= Text blocks =================
 class TextBlockProcessor(BaseBlockProcessor):
     def __init__(self, im_shape, size_over_height_ratio, inches_per_pixel, page_text_bb, mean_char_width, mean_char_height,
-                 raw_layout, layout_content, final_layout, im):
+                 layout_blocks, final_layout, im):
         super().__init__(im_shape, size_over_height_ratio, inches_per_pixel, page_text_bb, mean_char_width, mean_char_height,
-                         raw_layout, layout_content, final_layout, im)
+                         layout_blocks, final_layout, im)
     
-    def get_block_alignment(self, layout_content, area_bb, block_bb):
+    def get_block_alignment(self, block, area_bb, block_bb):
         """
             Return:
             - alignemnt type: 'Left', 'Right', 'Center', 'Justify'
@@ -52,10 +51,11 @@ class TextBlockProcessor(BaseBlockProcessor):
         DISTANCE_THRESHOLD = 2 * self.mean_char_width
 
         alignment, block_dist_from_margin, is_first_line_indent = 'Left', 0, False
-        if len(layout_content) == 1: # single line
-            line = layout_content[0]
-            line_text = ' '.join([word for _, word in line['words']])
-            line_bb = line['coords']
+        lines = block.lines
+        if len(lines) == 1: # single line
+            line = lines[0]
+            line_text = ' '.join([word_info['text'] for word_info in line.words])
+            line_bb = line.bbox
             mid_x = (line_bb[0] + line_bb[2]) / 2
             mid_area_x = (area_bb[0] + area_bb[2]) / 2
             if abs(line_bb[0] - area_bb[0]) < DISTANCE_THRESHOLD:
@@ -66,14 +66,14 @@ class TextBlockProcessor(BaseBlockProcessor):
                 alignment = "Center"
 
         else:
-            first_line_xmin = layout_content[0]['coords'][0]
-            line_xmins = [line['coords'][0] for line in layout_content]
-            line_xmaxs = [line['coords'][2] for line in layout_content]
+            first_line_xmin = lines[0].bbox[0]
+            line_xmins = [line.bbox[0] for line in lines]
+            line_xmaxs = [line.bbox[2] for line in lines]
             mid_points = [(start + end) / 2 for (start, end) in zip(line_xmins, line_xmaxs)]
 
             # if starts and ends of all lines are close to each other, return justify
             if (
-                len(layout_content) >= 3 and
+                len(lines) >= 3 and
                 abs(block_bb[0]-area_bb[0]) < DISTANCE_THRESHOLD and   # block fills column width
                 abs(block_bb[2]-area_bb[2]) < DISTANCE_THRESHOLD and   # block fills column width
                 all(abs(line_xmin - line_xmins[0]) < DISTANCE_THRESHOLD for line_xmin in line_xmins) and  # all lines have consistent start 
@@ -121,11 +121,14 @@ class TextBlockProcessor(BaseBlockProcessor):
             
         return alignment, block_dist_from_margin, is_first_line_indent
 
-    def _get_font_size(self, layout_content):
+    def _get_font_size(self, block):
         """
         Calculates font size for each line individually,
         then returns the most frequently occurring size.
         """
+        if not hasattr(block, 'lines'):  # Not a TextBlock
+            return 12  # Default font size
+            
         # Define adjustment factors - uppercase text appears taller so needs less scaling
         case_adjustment = {
             True: 1.0,  # For uppercase text
@@ -134,10 +137,12 @@ class TextBlockProcessor(BaseBlockProcessor):
         
         # Calculate font size for each line
         line_font_sizes = []
-        for line in layout_content:
+        for line in block.lines:
             line_heights = []
-            for word_box, word_text in line['words']:
+            for word_info in line.words:
                 # Get word height from bounding box coordinates
+                word_box = word_info['bbox']
+                word_text = word_info['text']
                 word_height = word_box[3] - word_box[1]
                 # Apply case-based adjustment factor
                 adjusted_height = word_height / case_adjustment[any_upper(word_text)]
